@@ -19,6 +19,11 @@ import {
   type DatosTicketTermico,
 } from "@/lib/hardware/escpos";
 import {
+  construirMensajeWhatsAppTicket,
+  abrirWhatsAppClienteDirecto,
+  normalizarTelefonoVenezuela,
+} from "@/lib/hardware/whatsapp";
+import {
   Printer,
   QrCode,
   ShieldCheck,
@@ -36,6 +41,10 @@ import {
   Award,
   PlusCircle,
   Users,
+  MessageCircle,
+  Smartphone,
+  Copy,
+  Send,
 } from "lucide-react";
 
 interface JugadaCarrito {
@@ -49,6 +58,9 @@ interface JugadaCarrito {
 interface TicketHistoricoLocal {
   ticketId: string;
   serialCorto: string;
+  pinReclamo: string; // Formato corto fácil de dictar/enviar por WhatsApp: 0001041-9F4C2E81
+  clienteTelefono: string;
+  canalEntrega: "WHATSAPP" | "TERMICA_ESCPOS" | "AMBOS";
   tenantNombre: string;
   tenantRif: string;
   fechaHora: string;
@@ -58,6 +70,7 @@ interface TicketHistoricoLocal {
   totalBs: number;
   codigoSeguridad: string;
   qrPayload: string;
+  mensajeWhatsApp: string;
   estado: "EMITIDO" | "GANADOR" | "PAGADO" | "PERDEDOR" | "ANULADO";
   premioTotalUsd: number;
   items: Array<{
@@ -84,12 +97,11 @@ interface TenantComercio {
 }
 
 export default function TaquillaPosSystem() {
-  // Navegación principal de vistas requeridas
   const [vistaActiva, setVistaActiva] = useState<
     "POS" | "COBRO_QR" | "ADMIN_COMERCIO" | "SUPERADMIN"
   >("POS");
 
-  // Contexto del Tenant Activo (Por defecto Tenant #1: Bodega Piloto Magaly)
+  // Contexto Multi-Tenant (Por defecto Tenant #1: Bodega Piloto Magaly)
   const [tenants, setTenants] = useState<TenantComercio[]>([
     {
       id: "11111111-1111-4111-8111-111111111111",
@@ -131,24 +143,36 @@ export default function TaquillaPosSystem() {
   const [ahora, setAhora] = useState<Date>(new Date());
   const [sorteoSeleccionadoId, setSorteoSeleccionadoId] = useState<number>(2); // 10:00 AM por defecto
 
-  // Inputs de Taquilla Ultra-Rápida 100% Teclado Numérico
+  // Inputs de Taquilla Ultra-Rápida + Canal de Entrega (Por defecto WHATSAPP ya que no hay impresora física aún)
   const [codigoInput, setCodigoInput] = useState<string>("");
   const [montoInput, setMontoInput] = useState<string>("1.00");
+  const [clienteTelefonoInput, setClienteTelefonoInput] =
+    useState<string>("0414-1234567");
+  const [modoEntrega, setModoEntrega] = useState<
+    "WHATSAPP" | "TERMICA_ESCPOS" | "AMBOS"
+  >("WHATSAPP");
   const [carrito, setCarrito] = useState<JugadaCarrito[]>([]);
   const [anchoImpresora, setAnchoImpresora] = useState<"58mm" | "80mm">("58mm");
   const [usarWebSerial, setUsarWebSerial] = useState<boolean>(false);
 
   // Control de Cupos Acumulados por Tenant + Sorteo + Animal: clave `${tenantId}_${sorteoId}_${dbNumber}`
   const [cuposAcumulados, setCuposAcumulados] = useState<Record<string, number>>({
-    "11111111-1111-4111-8111-111111111111_2_5": 6.5, // León en sorteo 10:00 AM lleva $6.50 de $10.00
-    "11111111-1111-4111-8111-111111111111_2_0": 9.0, // Delfín lleva $9.00 de $10.00
+    "11111111-1111-4111-8111-111111111111_2_5": 6.5,
+    "11111111-1111-4111-8111-111111111111_2_0": 9.0,
   });
 
   // Resultados Oficiales del Día por Sorteo
   const [resultadosSorteo, setResultadosSorteo] = useState<
-    Record<number, { animalDbNumber: number; metodo: string; horaLiquidacion: string }>
+    Record<
+      number,
+      { animalDbNumber: number; metodo: string; horaLiquidacion: string }
+    >
   >({
-    1: { animalDbNumber: 5, metodo: "AUTO_CRON", horaLiquidacion: "09:02:14 AM" }, // 09:00 AM ganó 05 - León
+    1: {
+      animalDbNumber: 5,
+      metodo: "AUTO_CRON",
+      horaLiquidacion: "09:02:14 AM",
+    },
   });
 
   // Historial de Tickets Emitidos en la sesión (Aislados por Tenant)
@@ -159,6 +183,9 @@ export default function TaquillaPosSystem() {
       {
         ticketId: "a8098c1a-f86e-11da-bd1a-00112444be1e",
         serialCorto: "0001041",
+        pinReclamo: "0001041-9F4C2E81",
+        clienteTelefono: "0414-1234567",
+        canalEntrega: "WHATSAPP",
         tenantNombre: "Bodega Piloto Magaly",
         tenantRif: "J-40123987-1",
         fechaHora: "29/10/2026 08:45:12 AM",
@@ -170,8 +197,10 @@ export default function TaquillaPosSystem() {
           "9f4c2e81b6a04d3e71289a0c55f1e2d3c4b5a697887766554433221100aabbcc",
         qrPayload:
           "BANCAPRO|11111111-1111-4111-8111-111111111111|a8098c1a-f86e-11da-bd1a-00112444be1e|2.00|1793277912|9f4c2e81b6a04d3e71289a0c55f1e2d3c4b5a697887766554433221100aabbcc",
+        mensajeWhatsApp:
+          "🎟️ *COMPROBANTE OFICIAL - BODEGA PILOTO MAGALY*\n📌 *TICKET N°:* #0001041\n🔐 *CÓDIGO PARA RECLAMAR PREMIO:* 0001041-9F4C2E81",
         estado: "GANADOR",
-        premioTotalUsd: 60.0, // $2.00 * 30 = $60.00 USD
+        premioTotalUsd: 60.0,
         items: [
           {
             sorteoId: 1,
@@ -189,13 +218,15 @@ export default function TaquillaPosSystem() {
 
   const [ultimoTicketImpreso, setUltimoTicketImpreso] =
     useState<DatosTicketTermico | null>(null);
+  const [ultimoTicketWhatsApp, setUltimoTicketWhatsApp] =
+    useState<TicketHistoricoLocal | null>(null);
   const [alertaSistema, setAlertaSistema] = useState<{
     tipo: "exito" | "error" | "info";
     mensaje: string;
   } | null>(null);
   const [procesandoVenta, setProcesandoVenta] = useState<boolean>(false);
 
-  // Estado para Pantalla 2: Verificación y Cobro con Lector QR
+  // Estado para Pantalla 2: Verificación y Cobro por WhatsApp (PIN, Teléfono o Firma QR)
   const [inputQrCobro, setInputQrCobro] = useState<string>("");
   const [ticketVerificadoCobro, setTicketVerificadoCobro] =
     useState<TicketHistoricoLocal | null>(null);
@@ -207,7 +238,8 @@ export default function TaquillaPosSystem() {
   const [sorteoLiquidarId, setSorteoLiquidarId] = useState<number>(2);
   const [animalGanadorManual, setAnimalGanadorManual] = useState<string>("05");
   const [pasoConfirmacionManual, setPasoConfirmacionManual] = useState<1 | 2>(1);
-  const [nuevaPerdidaMaxInput, setNuevaPerdidaMaxInput] = useState<string>("300");
+  const [nuevaPerdidaMaxInput, setNuevaPerdidaMaxInput] =
+    useState<string>("300");
 
   // Estado para Pantalla 4: SuperAdmin Creación de Tenant
   const [nuevoComercioNombre, setNuevoComercioNombre] = useState<string>("");
@@ -219,13 +251,12 @@ export default function TaquillaPosSystem() {
   const inputCodigoRef = useRef<HTMLInputElement>(null);
   const inputMontoRef = useRef<HTMLInputElement>(null);
 
-  // Reloj en tiempo real cada segundo
   useEffect(() => {
     const timer = setInterval(() => setAhora(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 
-  // Calcular estado de cada horario respecto a la regla estricta T - 3 minutos
+  // Estado de horarios respecto a la regla estricta T - 3 minutos
   const estadoHorarios = useMemo(() => {
     const hActual = ahora.getHours();
     const mActual = ahora.getMinutes();
@@ -235,7 +266,7 @@ export default function TaquillaPosSystem() {
     return HORARIOS_OFICIALES_LOTTO_ACTIVO.map((h) => {
       const [hh, mm] = h.hora24.split(":").map(Number);
       const segsOficial = hh * 3600 + mm * 60;
-      const segsLockdown = segsOficial - 3 * 60; // Exactamente T - 3 minutos
+      const segsLockdown = segsOficial - 3 * 60;
       const segsRestantesCierre = segsLockdown - segsDiaActual;
       const liquidado = Boolean(resultadosSorteo[h.id]);
       const bloqueadoPorHorario = segsRestantesCierre <= 0;
@@ -253,7 +284,6 @@ export default function TaquillaPosSystem() {
     });
   }, [ahora, resultadosSorteo]);
 
-  // Próximo sorteo en curso para el contador regresivo de cabecera
   const proximoSorteoAbierto = useMemo(
     () =>
       estadoHorarios.find((h) => h.abiertoParaVenta) ??
@@ -266,18 +296,14 @@ export default function TaquillaPosSystem() {
     const hrs = Math.floor(totalSegs / 3600);
     const mins = Math.floor((totalSegs % 3600) / 60);
     const segs = totalSegs % 60;
-    return [hrs, mins, segs]
-      .map((n) => String(n).padStart(2, "0"))
-      .join(":");
+    return [hrs, mins, segs].map((n) => String(n).padStart(2, "0")).join(":");
   };
 
-  // Figura previsualizada mientras el cajero escribe en el campo de código
   const figuraPrevisualizada = useMemo(
     () => resolverFiguraPorInput(codigoInput),
     [codigoInput]
   );
 
-  // Cupo disponible en vivo para la figura seleccionada en el sorteo activo
   const obtenerCupoDisponible = (sorteoId: number, dbNumber: number) => {
     const key = `${tenantActual.id}_${sorteoId}_${dbNumber}`;
     const usadoEnDb = cuposAcumulados[key] ?? 0;
@@ -290,11 +316,12 @@ export default function TaquillaPosSystem() {
 
     return Math.max(
       0,
-      Number((tenantActual.cupoAnimalUsd - usadoEnDb - usadoEnCarrito).toFixed(2))
+      Number(
+        (tenantActual.cupoAnimalUsd - usadoEnDb - usadoEnCarrito).toFixed(2)
+      )
     );
   };
 
-  // Agregar jugada validando Lockdown (T - 3 min) y Cupo Atómico por Animal
   const agregarJugadaAlCarrito = (figuraOverride?: FiguraAnimalito) => {
     setAlertaSistema(null);
     const figura = figuraOverride ?? resolverFiguraPorInput(codigoInput);
@@ -321,11 +348,12 @@ export default function TaquillaPosSystem() {
     const horario = estadoHorarios.find((h) => h.id === sorteoSeleccionadoId);
     if (!horario) return;
 
-    // Validación de corte estricto T - 3 minutos
     if (!horario.abiertoParaVenta) {
       setAlertaSistema({
         tipo: "error",
-        mensaje: `LOCKDOWN ACTIVO: El sorteo de las ${horario.etiqueta} cerró a las ${horario.cierre24.slice(
+        mensaje: `LOCKDOWN ACTIVO: El sorteo de las ${
+          horario.etiqueta
+        } cerró a las ${horario.cierre24.slice(
           0,
           5
         )} (3 minutos antes de la hora oficial).`,
@@ -333,7 +361,6 @@ export default function TaquillaPosSystem() {
       return;
     }
 
-    // Validación atómica de cupo de riesgo (Pérdida Máxima / 30)
     const disponible = obtenerCupoDisponible(
       sorteoSeleccionadoId,
       figura.dbNumber
@@ -365,12 +392,9 @@ export default function TaquillaPosSystem() {
     inputCodigoRef.current?.focus();
   };
 
-  // Totales del ticket en confección
   const totalCarritoUsd = useMemo(
     () =>
-      Number(
-        carrito.reduce((acc, item) => acc + item.montoUsd, 0).toFixed(2)
-      ),
+      Number(carrito.reduce((acc, item) => acc + item.montoUsd, 0).toFixed(2)),
     [carrito]
   );
   const totalCarritoBs = useMemo(
@@ -378,9 +402,22 @@ export default function TaquillaPosSystem() {
     [totalCarritoUsd, tasaBcv]
   );
 
-  // Procesar Emisión Transaccional del Ticket + Firma HMAC-SHA256 + Impresión ESC/POS
+  // Procesar Emisión Transaccional del Ticket + Despacho por WhatsApp al Cliente
   const procesarEmisionTicket = async () => {
     if (carrito.length === 0 || procesandoVenta) return;
+
+    if (
+      (modoEntrega === "WHATSAPP" || modoEntrega === "AMBOS") &&
+      normalizarTelefonoVenezuela(clienteTelefonoInput).length < 10
+    ) {
+      setAlertaSistema({
+        tipo: "error",
+        mensaje:
+          "Ingrese el número de WhatsApp del cliente (ej. 0414-1234567) para enviarle su comprobante digital.",
+      });
+      return;
+    }
+
     setProcesandoVenta(true);
     setAlertaSistema(null);
 
@@ -391,8 +428,11 @@ export default function TaquillaPosSystem() {
         monto_usd: j.montoUsd,
       }));
 
-      // Intentar invocar Server Action contra Supabase RPC `emitir_ticket`
-      const respuestaRpc = await emitirTicket(payloadRpc);
+      const respuestaRpc = await emitirTicket(
+        payloadRpc,
+        clienteTelefonoInput,
+        modoEntrega
+      );
 
       // Actualizar el estado atómico de cupos del comercio actual
       const nuevosCupos = { ...cuposAcumulados };
@@ -409,7 +449,9 @@ export default function TaquillaPosSystem() {
           setProcesandoVenta(false);
           return;
         }
-        nuevosCupos[k] = Number(((nuevosCupos[k] ?? 0) + item.montoUsd).toFixed(2));
+        nuevosCupos[k] = Number(
+          ((nuevosCupos[k] ?? 0) + item.montoUsd).toFixed(2)
+        );
       }
       setCuposAcumulados(nuevosCupos);
 
@@ -421,7 +463,6 @@ export default function TaquillaPosSystem() {
       ).padStart(7, "0");
       const epochSegs = Math.floor(Date.now() / 1000);
 
-      // Generar hash HMAC-SHA256 determinista si operamos en modo local antes de correr la migración SQL
       const encoder = new TextEncoder();
       const dataBuffer = encoder.encode(
         `${tenantActual.id}|${ticketIdFinal}|${totalCarritoUsd.toFixed(
@@ -435,6 +476,10 @@ export default function TaquillaPosSystem() {
 
       const codigoSeguridadFinal =
         respuestaRpc.ticket?.codigo_seguridad ?? hashHexLocal;
+      const pinReclamoCorto = `${serialCortoFinal}-${codigoSeguridadFinal
+        .slice(0, 8)
+        .toUpperCase()}`;
+
       const qrPayloadFinal =
         respuestaRpc.ticket?.qr_payload ??
         `BANCAPRO|${tenantActual.id}|${ticketIdFinal}|${totalCarritoUsd.toFixed(
@@ -445,39 +490,6 @@ export default function TaquillaPosSystem() {
         dateStyle: "short",
         timeStyle: "medium",
       }).format(new Date());
-
-      const nuevoTicketHistorico: TicketHistoricoLocal = {
-        ticketId: ticketIdFinal,
-        serialCorto: serialCortoFinal,
-        tenantNombre: tenantActual.nombre,
-        tenantRif: tenantActual.rif,
-        fechaHora: fechaStr,
-        timestampEmisionMs: Date.now(),
-        tasaBcv,
-        totalUsd: totalCarritoUsd,
-        totalBs: totalCarritoBs,
-        codigoSeguridad: codigoSeguridadFinal,
-        qrPayload: qrPayloadFinal,
-        estado: "EMITIDO",
-        premioTotalUsd: 0,
-        items: carrito.map((c) => ({
-          sorteoId: c.sorteoId,
-          sorteoHora: c.sorteoEtiqueta,
-          dbNumber: c.figura.dbNumber,
-          codigoAnimal: c.figura.codigo,
-          nombreAnimal: c.figura.nombre,
-          montoUsd: c.montoUsd,
-          premioPotencialUsd: Number((c.montoUsd * 30).toFixed(2)),
-        })),
-      };
-
-      setTicketsPorTenant((prev) => ({
-        ...prev,
-        [tenantActual.id]: [
-          nuevoTicketHistorico,
-          ...(prev[tenantActual.id] ?? []),
-        ],
-      }));
 
       const datosImpresion: DatosTicketTermico = {
         comercioNombre: tenantActual.nombre,
@@ -501,23 +513,93 @@ export default function TaquillaPosSystem() {
         })),
       };
 
-      setUltimoTicketImpreso(datosImpresion);
-      setCarrito([]);
-      setAlertaSistema({
-        tipo: "exito",
-        mensaje: `Ticket #${serialCortoFinal} emitido con firma HMAC-SHA256 ($${totalCarritoUsd.toFixed(
-          2
-        )} / Bs. ${totalCarritoBs.toFixed(2)}).`,
+      const textoWhatsApp = construirMensajeWhatsAppTicket({
+        ...datosImpresion,
+        clienteTelefono: clienteTelefonoInput,
       });
 
-      await imprimirTicketTermico(datosImpresion, usarWebSerial);
+      const nuevoTicketHistorico: TicketHistoricoLocal = {
+        ticketId: ticketIdFinal,
+        serialCorto: serialCortoFinal,
+        pinReclamo: pinReclamoCorto,
+        clienteTelefono: clienteTelefonoInput,
+        canalEntrega: modoEntrega,
+        tenantNombre: tenantActual.nombre,
+        tenantRif: tenantActual.rif,
+        fechaHora: fechaStr,
+        timestampEmisionMs: Date.now(),
+        tasaBcv,
+        totalUsd: totalCarritoUsd,
+        totalBs: totalCarritoBs,
+        codigoSeguridad: codigoSeguridadFinal,
+        qrPayload: qrPayloadFinal,
+        mensajeWhatsApp: textoWhatsApp,
+        estado: "EMITIDO",
+        premioTotalUsd: 0,
+        items: carrito.map((c) => ({
+          sorteoId: c.sorteoId,
+          sorteoHora: c.sorteoEtiqueta,
+          dbNumber: c.figura.dbNumber,
+          codigoAnimal: c.figura.codigo,
+          nombreAnimal: c.figura.nombre,
+          montoUsd: c.montoUsd,
+          premioPotencialUsd: Number((c.montoUsd * 30).toFixed(2)),
+        })),
+      };
+
+      setTicketsPorTenant((prev) => ({
+        ...prev,
+        [tenantActual.id]: [
+          nuevoTicketHistorico,
+          ...(prev[tenantActual.id] ?? []),
+        ],
+      }));
+
+      setUltimoTicketImpreso(datosImpresion);
+      setUltimoTicketWhatsApp(nuevoTicketHistorico);
+      setCarrito([]);
+
+      // Despacho por WhatsApp (Intenta API silenciosa en /api/whatsapp/send; si no hay token de pago, abre wa.me directo)
+      if (modoEntrega === "WHATSAPP" || modoEntrega === "AMBOS") {
+        try {
+          const respWa = await fetch("/api/whatsapp/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              telefono: clienteTelefonoInput,
+              mensajeTexto: textoWhatsApp,
+              qrPayload: qrPayloadFinal,
+            }),
+          });
+          const waJson = await respWa.json();
+          if (waJson?.modo === "WA_ME_DIRECTO") {
+            abrirWhatsAppClienteDirecto({
+              ...datosImpresion,
+              clienteTelefono: clienteTelefonoInput,
+            });
+          }
+        } catch {
+          abrirWhatsAppClienteDirecto({
+            ...datosImpresion,
+            clienteTelefono: clienteTelefonoInput,
+          });
+        }
+      }
+
+      if (modoEntrega === "TERMICA_ESCPOS" || modoEntrega === "AMBOS") {
+        await imprimirTicketTermico(datosImpresion, usarWebSerial);
+      }
+
+      setAlertaSistema({
+        tipo: "exito",
+        mensaje: `Ticket #${serialCortoFinal} emitido y despachado al WhatsApp ${clienteTelefonoInput} (PIN Reclamo: ${pinReclamoCorto}).`,
+      });
     } finally {
       setProcesandoVenta(false);
       inputCodigoRef.current?.focus();
     }
   };
 
-  // Sincronizar Tasa Oficial BCV en vivo desde /api/cron/bcv
   const sincronizarTasaBcvAhora = async () => {
     setSincronizandoBcv(true);
     try {
@@ -533,13 +615,12 @@ export default function TaquillaPosSystem() {
         });
       }
     } catch {
-      // Mantiene la tasa vigente en caso de desconexión
+      // Mantiene tasa actual
     } finally {
       setSincronizandoBcv(false);
     }
   };
 
-  // Anular Ticket validando estrictamente <= 60 segundos desde emisión y > 3 min antes del sorteo
   const manejarAnulacionTicket = async (ticket: TicketHistoricoLocal) => {
     const segsTranscurridos = Math.floor(
       (Date.now() - ticket.timestampEmisionMs) / 1000
@@ -554,7 +635,6 @@ export default function TaquillaPosSystem() {
 
     await anularTicket(ticket.ticketId);
 
-    // Liberar cupo en el tenant actual
     const nuevosCupos = { ...cuposAcumulados };
     for (const item of ticket.items) {
       const k = `${tenantActual.id}_${item.sorteoId}_${item.dbNumber}`;
@@ -578,7 +658,7 @@ export default function TaquillaPosSystem() {
     });
   };
 
-  // Verificación de Ticket por Lector QR o Hash HMAC-SHA256 (Aislado por Tenant)
+  // Verificación de Ticket Ganador mediante PIN de WhatsApp, Teléfono del Cliente, Serial o Firma HMAC-SHA256
   const verificarQrParaCobro = (valorInput?: string) => {
     const query = (valorInput ?? inputQrCobro).trim();
     setErrorVerificacionQr(null);
@@ -587,16 +667,22 @@ export default function TaquillaPosSystem() {
     if (!query) return;
 
     const listaTenantActual = ticketsPorTenant[tenantActual.id] ?? [];
+    const queryUpper = query.toUpperCase();
+    const queryDigits = normalizarTelefonoVenezuela(query);
+
     const encontrado = listaTenantActual.find(
       (t) =>
+        t.pinReclamo.toUpperCase() === queryUpper ||
         t.qrPayload === query ||
-        t.codigoSeguridad === query ||
-        t.serialCorto === query
+        t.codigoSeguridad.toLowerCase() === query.toLowerCase() ||
+        t.serialCorto === query.replace(/^#/, "") ||
+        (queryDigits.length >= 10 &&
+          normalizarTelefonoVenezuela(t.clienteTelefono) === queryDigits)
     );
 
     if (!encontrado) {
       setErrorVerificacionQr(
-        "ALERTA RLS / ANTI-FRAUDE: El código QR/Firma no existe o pertenece a otro comercio independiente."
+        "ALERTA RLS / ANTI-FRAUDE: No se encontró ningún ticket con ese PIN de WhatsApp, Teléfono o Firma HMAC en este comercio."
       );
       return;
     }
@@ -604,7 +690,6 @@ export default function TaquillaPosSystem() {
     setTicketVerificadoCobro(encontrado);
   };
 
-  // Confirmar Desembolso de Premio con Idempotencia Estricta
   const confirmarPagoPremio = async () => {
     if (!ticketVerificadoCobro || ticketVerificadoCobro.estado !== "GANADOR")
       return;
@@ -627,13 +712,14 @@ export default function TaquillaPosSystem() {
       tipo: "exito",
       mensaje: `PAGO IDEMPOTENTE REGISTRADO: Ticket #${
         actualizado.serialCorto
-      } pagado por $${actualizado.premioTotalUsd.toFixed(2)} USD (Bs. ${(
+      } (Cliente WA: ${
+        actualizado.clienteTelefono
+      }) pagado por $${actualizado.premioTotalUsd.toFixed(2)} USD (Bs. ${(
         actualizado.premioTotalUsd * tasaBcv
       ).toFixed(2)}).`,
     });
   };
 
-  // Ejecutar Motor de Liquidación (`liquidar_sorteo`) para todos los Tenants simultáneamente
   const ejecutarLiquidacionManualContingencia = async () => {
     const figuraGanadora = resolverFiguraPorInput(animalGanadorManual);
     if (!figuraGanadora) return;
@@ -657,7 +743,6 @@ export default function TaquillaPosSystem() {
       },
     }));
 
-    // Liquidar tickets de todos los tenants de forma aislada (30x el valor jugado)
     setTicketsPorTenant((prev) => {
       const nuevoMapa: Record<string, TicketHistoricoLocal[]> = {};
       for (const [tId, lista] of Object.entries(prev)) {
@@ -696,7 +781,6 @@ export default function TaquillaPosSystem() {
     });
   };
 
-  // Métricas financieras aisladas del Comercio Actual (Cuadre de Caja Diario)
   const cuadreCajaTenantActual = useMemo(() => {
     const lista = (ticketsPorTenant[tenantActual.id] ?? []).filter(
       (t) => t.estado !== "ANULADO"
@@ -725,7 +809,6 @@ export default function TaquillaPosSystem() {
       {/* BARRA SUPERIOR OPERATIVA MULTI-TENANT */}
       <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur px-4 py-3 print:hidden">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
-          {/* Identidad BancaPro Core + Selector de Comercio Aislado (RLS Demo) */}
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-xl bg-emerald-500/15 border border-emerald-500/40 flex items-center justify-center text-emerald-400 font-black text-lg">
               BP
@@ -736,7 +819,7 @@ export default function TaquillaPosSystem() {
                   BancaPro Core
                 </h1>
                 <span className="text-[11px] font-mono uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                  ACID • RLS Multi-Tenant
+                  WhatsApp Ticket • RLS Multi-Tenant
                 </span>
               </div>
               <div className="flex items-center gap-2 text-xs text-slate-400 mt-0.5">
@@ -761,7 +844,6 @@ export default function TaquillaPosSystem() {
             </div>
           </div>
 
-          {/* Indicador en Vivo: Conteo Regresivo de Lockdown (T - 3 min) y Tasa BCV */}
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-2.5 bg-slate-950 border border-amber-500/30 rounded-lg px-3 py-1.5">
               <Clock className="w-4 h-4 text-amber-400 animate-pulse" />
@@ -801,7 +883,6 @@ export default function TaquillaPosSystem() {
               </button>
             </div>
 
-            {/* Pestañas de las 4 Interfaces Requeridas */}
             <nav className="flex bg-slate-950 p-1 rounded-lg border border-slate-800">
               <button
                 onClick={() => setVistaActiva("POS")}
@@ -822,8 +903,8 @@ export default function TaquillaPosSystem() {
                     : "text-slate-400 hover:text-white"
                 }`}
               >
-                <QrCode className="w-3.5 h-3.5" />
-                2. Cobro / QR
+                <MessageCircle className="w-3.5 h-3.5" />
+                2. Reclamar Premio (WhatsApp / QR)
               </button>
               <button
                 onClick={() => setVistaActiva("ADMIN_COMERCIO")}
@@ -854,9 +935,7 @@ export default function TaquillaPosSystem() {
 
       {/* BANNER DE FEEDBACK TRANSACCIONAL */}
       {alertaSistema && (
-        <div
-          className={`max-w-7xl mx-auto w-full mt-3 px-4 print:hidden`}
-        >
+        <div className="max-w-7xl mx-auto w-full mt-3 px-4 print:hidden">
           <div
             className={`flex items-center justify-between px-4 py-2.5 rounded-lg border text-xs font-medium ${
               alertaSistema.tipo === "error"
@@ -887,11 +966,11 @@ export default function TaquillaPosSystem() {
       {/* CONTENIDO PRINCIPAL */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 print:hidden">
         {/* =====================================================================
-            VISTA 1: TAQUILLA POS ULTRA-RÁPIDA (TECLADO NUMÉRICO + IMPRESIÓN ESC/POS)
+            VISTA 1: TAQUILLA POS CON DESPACHO DE TICKET POR WHATSAPP (SIN IMPRESORA)
            ===================================================================== */}
         {vistaActiva === "POS" && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-            {/* COLUMNA IZQUIERDA (8 cols): Selector de Sorteo, Entrada Rápida por Teclado y Matriz de 38 Figuras */}
+            {/* COLUMNA IZQUIERDA (8 cols) */}
             <div className="lg:col-span-8 space-y-4">
               {/* Selector de Sorteo con bloqueo automático T - 3 minutos */}
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
@@ -949,12 +1028,11 @@ export default function TaquillaPosSystem() {
                     </h2>
                   </div>
                   <span className="text-[11px] text-slate-400 font-mono">
-                    [Enter] Agregar Jugada • [F9] Emitir e Imprimir Ticket
+                    [Enter] Agregar Jugada • [F9] Emitir y Enviar por WhatsApp
                   </span>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
-                  {/* Input Código Animalito */}
                   <div className="sm:col-span-4">
                     <label className="block text-[11px] text-slate-400 mb-1 font-medium">
                       Código Figura (0, 00, 01..36)
@@ -989,15 +1067,12 @@ export default function TaquillaPosSystem() {
                     </div>
                   </div>
 
-                  {/* Input Monto USD + Conversión Automática Bs */}
                   <div className="sm:col-span-5">
                     <div className="flex justify-between text-[11px] text-slate-400 mb-1 font-medium">
                       <span>Monto Jugada (USD)</span>
                       <span className="text-sky-400 font-mono">
                         ≈ Bs.{" "}
-                        {(
-                          (parseFloat(montoInput) || 0) * tasaBcv
-                        ).toFixed(2)}
+                        {((parseFloat(montoInput) || 0) * tasaBcv).toFixed(2)}
                       </span>
                     </div>
                     <div className="flex gap-1.5">
@@ -1032,7 +1107,6 @@ export default function TaquillaPosSystem() {
                     </div>
                   </div>
 
-                  {/* Botón Agregar al Ticket */}
                   <div className="sm:col-span-3">
                     <button
                       type="button"
@@ -1045,14 +1119,14 @@ export default function TaquillaPosSystem() {
                 </div>
               </div>
 
-              {/* Matriz Interactiva de las 38 Figuras de Lotto Activo con Barra de Cupo Atómico en Vivo */}
+              {/* Matriz Interactiva de las 38 Figuras de Lotto Activo */}
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
                     Catálogo Oficial Lotto Activo (38 Figuras - Paga 30x)
                   </span>
                   <span className="text-[11px] text-slate-400">
-                    Clic directo en cualquier animalito para agregar con el monto actual
+                    Clic directo en cualquier animalito para agregar
                   </span>
                 </div>
 
@@ -1096,7 +1170,9 @@ export default function TaquillaPosSystem() {
                             <span>Cupo:</span>
                             <span
                               className={
-                                agotado ? "text-red-400 font-bold" : "text-emerald-400"
+                                agotado
+                                  ? "text-red-400 font-bold"
+                                  : "text-emerald-400"
                               }
                             >
                               ${disp.toFixed(1)}
@@ -1122,7 +1198,7 @@ export default function TaquillaPosSystem() {
               </div>
             </div>
 
-            {/* COLUMNA DERECHA (4 cols): Ticket en Curso, Totales USD/Bs, Impresión Térmica ESC/POS y Anulación (<60s) */}
+            {/* COLUMNA DERECHA (4 cols): Ticket Digital por WhatsApp + Vista Previa de Mensaje Criptográfico */}
             <div className="lg:col-span-4 space-y-4">
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col">
                 <div className="flex items-center justify-between border-b border-slate-800 pb-3">
@@ -1134,24 +1210,64 @@ export default function TaquillaPosSystem() {
                       {tenantActual.nombre} • Tasa BCV: Bs. {tasaBcv.toFixed(2)}
                     </p>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <select
-                      value={anchoImpresora}
-                      onChange={(e) =>
-                        setAnchoImpresora(e.target.value as "58mm" | "80mm")
-                      }
-                      className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-[11px] font-mono text-slate-300"
-                    >
-                      <option value="58mm">Rollo 58mm</option>
-                      <option value="80mm">Rollo 80mm</option>
-                    </select>
+                  <span className="text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded">
+                    Modo Sin Impresora Activo
+                  </span>
+                </div>
+
+                {/* Selector de Canal de Entrega + Teléfono WhatsApp del Cliente */}
+                <div className="mt-3 bg-slate-950 border border-emerald-500/30 rounded-lg p-3 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-emerald-300 flex items-center gap-1.5">
+                      <Smartphone className="w-3.5 h-3.5" />
+                      Canal de Entrega del Ticket
+                    </span>
+                    <div className="flex gap-1">
+                      {(["WHATSAPP", "TERMICA_ESCPOS", "AMBOS"] as const).map(
+                        (modo) => (
+                          <button
+                            key={modo}
+                            type="button"
+                            onClick={() => setModoEntrega(modo)}
+                            className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition ${
+                              modoEntrega === modo
+                                ? "bg-emerald-600 text-white"
+                                : "bg-slate-800 text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            {modo === "WHATSAPP"
+                              ? "WhatsApp"
+                              : modo === "TERMICA_ESCPOS"
+                              ? "Impresora"
+                              : "Ambos"}
+                          </button>
+                        )
+                      )}
+                    </div>
                   </div>
+
+                  {(modoEntrega === "WHATSAPP" || modoEntrega === "AMBOS") && (
+                    <div>
+                      <label className="block text-[11px] text-slate-400 mb-1">
+                        WhatsApp del Cliente (Para enviarle su Ticket y PIN de Cobro):
+                      </label>
+                      <input
+                        type="tel"
+                        value={clienteTelefonoInput}
+                        onChange={(e) =>
+                          setClienteTelefonoInput(e.target.value)
+                        }
+                        placeholder="Ej: 0414-1234567 o +58412..."
+                        className="w-full bg-slate-900 border border-slate-700 focus:border-emerald-500 rounded-lg px-3 py-2 font-mono text-sm text-white focus:outline-none"
+                      />
+                    </div>
+                  )}
                 </div>
 
                 {/* Lista de Jugadas en el Carrito */}
-                <div className="my-3 max-h-64 overflow-y-auto space-y-2 pr-1">
+                <div className="my-3 max-h-52 overflow-y-auto space-y-2 pr-1">
                   {carrito.length === 0 ? (
-                    <div className="text-center py-8 text-xs text-slate-500 border border-dashed border-slate-800 rounded-lg">
+                    <div className="text-center py-6 text-xs text-slate-500 border border-dashed border-slate-800 rounded-lg">
                       Sin jugadas aún. Digite el código (ej. 05) y presione Enter.
                     </div>
                   ) : (
@@ -1225,35 +1341,82 @@ export default function TaquillaPosSystem() {
                   </div>
                 </div>
 
-                {/* Opciones de Hardware ESC/POS y Botón de Emisión Atómica */}
-                <label className="flex items-center gap-2 text-[11px] text-slate-400 mt-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={usarWebSerial}
-                    onChange={(e) => setUsarWebSerial(e.target.checked)}
-                    className="rounded border-slate-700 bg-slate-950 text-emerald-500"
-                  />
-                  <span>
-                    Enviar comandos binarios ESC/POS directo por puerto USB/WebSerial
-                  </span>
-                </label>
-
                 <button
                   type="button"
                   disabled={carrito.length === 0 || procesandoVenta}
                   onClick={procesarEmisionTicket}
                   className="mt-3 w-full py-3.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition shadow-lg"
                 >
-                  <Printer className="w-4 h-4" />
+                  {modoEntrega === "WHATSAPP" ? (
+                    <MessageCircle className="w-4 h-4" />
+                  ) : (
+                    <Printer className="w-4 h-4" />
+                  )}
                   <span>
                     {procesandoVenta
-                      ? "Firmando HMAC & Validando Cupo..."
-                      : `Emitir e Imprimir Ticket (${anchoImpresora}) [F9]`}
+                      ? "Firmando HMAC y Enviando a WhatsApp..."
+                      : modoEntrega === "WHATSAPP"
+                      ? "Emitir y Enviar Ticket por WhatsApp [F9]"
+                      : `Emitir Ticket (${modoEntrega}) [F9]`}
                   </span>
                 </button>
               </div>
 
-              {/* Últimos Tickets del Comercio Actual + Botón de Anulación Regla < 60s */}
+              {/* Tarjeta del Último Ticket Digital Generado para WhatsApp */}
+              {ultimoTicketWhatsApp && (
+                <div className="bg-emerald-950/30 border border-emerald-500/40 rounded-xl p-4 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
+                      <MessageCircle className="w-4 h-4 text-emerald-400" />
+                      Comprobante WhatsApp Listo (#
+                      {ultimoTicketWhatsApp.serialCorto})
+                    </span>
+                    <span className="text-[11px] font-mono bg-emerald-500/20 text-emerald-200 px-2 py-0.5 rounded">
+                      PIN: {ultimoTicketWhatsApp.pinReclamo}
+                    </span>
+                  </div>
+                  <pre className="text-[10px] font-mono bg-slate-950/90 border border-slate-800 rounded-lg p-2.5 text-slate-300 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                    {ultimoTicketWhatsApp.mensajeWhatsApp}
+                  </pre>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (ultimoTicketImpreso) {
+                          abrirWhatsAppClienteDirecto({
+                            ...ultimoTicketImpreso,
+                            clienteTelefono:
+                              ultimoTicketWhatsApp.clienteTelefono,
+                          });
+                        }
+                      }}
+                      className="flex-1 py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      Reenviar a WhatsApp
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(
+                          ultimoTicketWhatsApp.mensajeWhatsApp
+                        );
+                        setAlertaSistema({
+                          tipo: "info",
+                          mensaje:
+                            "Comprobante de WhatsApp copiado al portapapeles.",
+                        });
+                      }}
+                      className="py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs flex items-center gap-1"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      Copiar
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Últimos Tickets del Comercio Actual + Reenvío WhatsApp + Anulación (<60s) */}
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
                 <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2.5">
                   Tickets Recientes ({tenantActual.nombre})
@@ -1273,7 +1436,7 @@ export default function TaquillaPosSystem() {
                       >
                         <div className="flex items-center justify-between">
                           <span className="font-mono font-bold text-white">
-                            #{tk.serialCorto}
+                            PIN: {tk.pinReclamo}
                           </span>
                           <span
                             className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold ${
@@ -1290,21 +1453,22 @@ export default function TaquillaPosSystem() {
                           </span>
                         </div>
                         <div className="flex justify-between text-[11px] text-slate-400 font-mono">
+                          <span>WA: {tk.clienteTelefono}</span>
                           <span>
-                            ${tk.totalUsd.toFixed(2)} (Bs. {tk.totalBs.toFixed(2)})
+                            ${tk.totalUsd.toFixed(2)} (Bs.{" "}
+                            {tk.totalBs.toFixed(2)})
                           </span>
-                          <span>HMAC: {tk.codigoSeguridad.slice(0, 10)}...</span>
                         </div>
                         <div className="flex items-center justify-between pt-1 border-t border-slate-900">
                           <button
                             onClick={() => {
-                              setInputQrCobro(tk.qrPayload);
+                              setInputQrCobro(tk.pinReclamo);
                               setVistaActiva("COBRO_QR");
-                              verificarQrParaCobro(tk.qrPayload);
+                              verificarQrParaCobro(tk.pinReclamo);
                             }}
                             className="text-[11px] text-sky-400 hover:underline font-medium"
                           >
-                            Verificar QR →
+                            Reclamar Premio →
                           </button>
                           {puedeAnular && (
                             <button
@@ -1325,21 +1489,25 @@ export default function TaquillaPosSystem() {
         )}
 
         {/* =====================================================================
-            VISTA 2: PANTALLA DE COBRO Y VERIFICACIÓN ANTI-FRAUDE (ESCÁNER QR / HMAC)
+            VISTA 2: RECLAMO Y PAGO DE PREMIOS POR WHATSAPP (PIN DE COBRO, TELÉFONO O QR)
            ===================================================================== */}
         {vistaActiva === "COBRO_QR" && (
           <div className="max-w-3xl mx-auto space-y-4">
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
               <div className="flex items-center gap-3 mb-4">
                 <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
-                  <QrCode className="w-6 h-6" />
+                  <MessageCircle className="w-6 h-6" />
                 </div>
                 <div>
                   <h2 className="text-base font-bold text-white">
-                    Verificación Criptográfica y Pago de Premios (QR / HMAC-SHA256)
+                    Reclamo de Premio por Comprobante de WhatsApp / Firma HMAC-SHA256
                   </h2>
                   <p className="text-xs text-slate-400">
-                    Escanee el código QR del ticket térmico o ingrese el serial de seguridad para validar su firma.
+                    Cuando el cliente muestre su mensaje de WhatsApp, digite el{" "}
+                    <strong className="text-emerald-300">
+                      PIN de Reclamo (Ej: 0001041-9F4C2E81)
+                    </strong>
+                    , su número de teléfono o la firma HMAC para verificar y pagar su premio.
                   </p>
                 </div>
               </div>
@@ -1352,35 +1520,33 @@ export default function TaquillaPosSystem() {
                   onKeyDown={(e) => {
                     if (e.key === "Enter") verificarQrParaCobro();
                   }}
-                  placeholder="Escanee el QR (BANCAPRO|tenant|ticket|monto|epoch|hmac) o pegue el código..."
+                  placeholder="Ingrese PIN de WhatsApp (ej: 0001041-9F4C2E81), Teléfono (0414-1234567) o Firma..."
                   className="flex-1 bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-lg px-4 py-3 font-mono text-xs text-white focus:outline-none"
                 />
                 <button
                   onClick={() => verificarQrParaCobro()}
                   className="px-5 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase rounded-lg transition"
                 >
-                  Validar Ticket
+                  Verificar Ticket
                 </button>
               </div>
 
-              {/* Atajos rápidos de prueba para verificar el ticket ganador de demostración */}
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-400">
-                <span>Tickets de prueba en {tenantActual.nombre}:</span>
+                <span>Probar reclamo rápido por WhatsApp en {tenantActual.nombre}:</span>
                 {(ticketsPorTenant[tenantActual.id] ?? []).map((tk) => (
                   <button
                     key={tk.ticketId}
                     onClick={() => {
-                      setInputQrCobro(tk.qrPayload);
-                      verificarQrParaCobro(tk.qrPayload);
+                      setInputQrCobro(tk.pinReclamo);
+                      verificarQrParaCobro(tk.pinReclamo);
                     }}
                     className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-mono text-[11px] border border-slate-700"
                   >
-                    Probar #{tk.serialCorto} ({tk.estado})
+                    PIN: {tk.pinReclamo} ({tk.estado})
                   </button>
                 ))}
               </div>
 
-              {/* Resultado de la Verificación Instantánea */}
               {errorVerificacionQr && (
                 <div className="mt-5 p-4 rounded-xl bg-red-950/80 border border-red-500 flex items-center gap-3 text-red-200">
                   <XCircle className="w-6 h-6 text-red-400 shrink-0" />
@@ -1395,9 +1561,8 @@ export default function TaquillaPosSystem() {
 
               {ticketVerificadoCobro && (
                 <div className="mt-5 bg-slate-950 border border-slate-800 rounded-xl p-5 space-y-4">
-                  {/* Banner de Estado Visual Instantáneo */}
                   <div
-                    className={`p-4 rounded-xl border flex items-center justify-between ${
+                    className={`p-4 rounded-xl border flex flex-wrap items-center justify-between gap-3 ${
                       ticketVerificadoCobro.estado === "GANADOR"
                         ? "bg-emerald-950/80 border-emerald-500 text-emerald-200"
                         : ticketVerificadoCobro.estado === "PAGADO"
@@ -1409,8 +1574,8 @@ export default function TaquillaPosSystem() {
                       <ShieldCheck className="w-7 h-7 shrink-0" />
                       <div>
                         <div className="text-xs uppercase font-mono tracking-wider opacity-80">
-                          Firma HMAC-SHA256 Auténtica • Ticket #
-                          {ticketVerificadoCobro.serialCorto}
+                          PIN WhatsApp: {ticketVerificadoCobro.pinReclamo} •
+                          Cliente: {ticketVerificadoCobro.clienteTelefono}
                         </div>
                         <div className="text-lg font-black">
                           {ticketVerificadoCobro.estado === "GANADOR" &&
@@ -1441,10 +1606,9 @@ export default function TaquillaPosSystem() {
                     )}
                   </div>
 
-                  {/* Detalle de jugadas del ticket verificado */}
                   <div className="space-y-1.5 text-xs">
                     <div className="text-slate-400 font-semibold">
-                      Desglose de Jugadas del Ticket:
+                      Desglose de Jugadas y Firma HMAC-SHA256 del Comprobante WhatsApp:
                     </div>
                     {ticketVerificadoCobro.items.map((item, idx) => (
                       <div
@@ -1461,6 +1625,9 @@ export default function TaquillaPosSystem() {
                         </span>
                       </div>
                     ))}
+                    <div className="text-[10px] font-mono text-slate-500 pt-1 break-all">
+                      HMAC-SHA256: {ticketVerificadoCobro.codigoSeguridad}
+                    </div>
                   </div>
                 </div>
               )}
@@ -1469,11 +1636,10 @@ export default function TaquillaPosSystem() {
         )}
 
         {/* =====================================================================
-            VISTA 3: DASHBOARD DE ADMINISTRACIÓN DEL COMERCIO (CUADRE DE CAJA + CUPOS + FAIL-SAFE MANUAL)
+            VISTA 3: DASHBOARD DE ADMINISTRACIÓN DEL COMERCIO
            ===================================================================== */}
         {vistaActiva === "ADMIN_COMERCIO" && (
           <div className="space-y-6">
-            {/* Tarjetas de Cuadre de Caja Diario Aislado por Tenant */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
                 <div className="text-xs text-slate-400">
@@ -1492,7 +1658,8 @@ export default function TaquillaPosSystem() {
                   Total Premios Generados (30x)
                 </div>
                 <div className="text-2xl font-black font-mono text-amber-400 mt-1">
-                  ${cuadreCajaTenantActual.totalPremiosGeneradosUsd.toFixed(2)} USD
+                  ${cuadreCajaTenantActual.totalPremiosGeneradosUsd.toFixed(2)}{" "}
+                  USD
                 </div>
                 <div className="text-xs font-mono text-slate-400 mt-0.5">
                   Bs.{" "}
@@ -1507,7 +1674,8 @@ export default function TaquillaPosSystem() {
                   Total Premios Pagados en Caja
                 </div>
                 <div className="text-2xl font-black font-mono text-rose-400 mt-1">
-                  ${cuadreCajaTenantActual.totalPremiosPagadosUsd.toFixed(2)} USD
+                  ${cuadreCajaTenantActual.totalPremiosPagadosUsd.toFixed(2)}{" "}
+                  USD
                 </div>
                 <div className="text-xs font-mono text-slate-400 mt-0.5">
                   Pendiente por cobrar: $
@@ -1538,7 +1706,6 @@ export default function TaquillaPosSystem() {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Configuración de Tolerancia de Riesgo y Cupo Máximo por Animal */}
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
                   <ShieldCheck className="w-4 h-4 text-emerald-400" />
@@ -1548,8 +1715,7 @@ export default function TaquillaPosSystem() {
                 </h3>
                 <p className="text-xs text-slate-400">
                   Defina la pérdida máxima aceptable por sorteo para{" "}
-                  <strong>{tenantActual.nombre}</strong>. El motor transaccional
-                  bloqueará automáticamente cualquier jugada que supere el cupo resultante.
+                  <strong>{tenantActual.nombre}</strong>.
                 </p>
 
                 <div className="flex items-end gap-3">
@@ -1567,7 +1733,10 @@ export default function TaquillaPosSystem() {
                   <div className="bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-xs font-mono">
                     <div className="text-slate-400">Cupo Máx por Figura:</div>
                     <div className="text-emerald-400 font-bold text-sm">
-                      ${((parseFloat(nuevaPerdidaMaxInput) || 0) / 30).toFixed(2)}{" "}
+                      $
+                      {((parseFloat(nuevaPerdidaMaxInput) || 0) / 30).toFixed(
+                        2
+                      )}{" "}
                       USD
                     </div>
                   </div>
@@ -1588,9 +1757,11 @@ export default function TaquillaPosSystem() {
                       );
                       setAlertaSistema({
                         tipo: "exito",
-                        mensaje: `Cupo máximo actualizado a $${(val / 30).toFixed(
-                          2
-                        )} USD por animalito para ${tenantActual.nombre}.`,
+                        mensaje: `Cupo máximo actualizado a $${(
+                          val / 30
+                        ).toFixed(2)} USD por animalito para ${
+                          tenantActual.nombre
+                        }.`,
                       });
                     }}
                     className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg"
@@ -1600,7 +1771,6 @@ export default function TaquillaPosSystem() {
                 </div>
               </div>
 
-              {/* Fail-Safe Manual de Contingencia con Confirmación de 2 Pasos */}
               <div className="bg-slate-900 border border-amber-500/40 rounded-xl p-5 space-y-4">
                 <h3 className="text-sm font-bold text-amber-300 flex items-center gap-2">
                   <Award className="w-4 h-4 text-amber-400" />
@@ -1610,7 +1780,7 @@ export default function TaquillaPosSystem() {
                 </h3>
                 <p className="text-xs text-slate-400">
                   Si el API externo de Lotto Activo presenta demoras, ingrese el animal ganador
-                  con confirmación de dos pasos para disparar el Stored Procedure{" "}
+                  con confirmación de dos pasos para disparar{" "}
                   <code className="text-amber-300">liquidar_sorteo()</code>.
                 </p>
 
@@ -1679,7 +1849,6 @@ export default function TaquillaPosSystem() {
               </div>
             </div>
 
-            {/* Historial de Sorteos y Resultados Oficiales del Día */}
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
               <h3 className="text-sm font-bold text-white mb-3">
                 Historial de Sorteos y Resultados del Día (Lotto Activo)
@@ -1725,11 +1894,10 @@ export default function TaquillaPosSystem() {
         )}
 
         {/* =====================================================================
-            VISTA 4: SUPERADMIN MULTI-TENANT GLOBAL (GESTIÓN DE COMERCIOS SIN MEZCLAR FONDOS)
+            VISTA 4: SUPERADMIN MULTI-TENANT GLOBAL
            ===================================================================== */}
         {vistaActiva === "SUPERADMIN" && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Formulario para Aprovisionar Nuevo Comercio (Tenant) */}
             <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <PlusCircle className="w-4 h-4 text-emerald-400" />
@@ -1805,7 +1973,9 @@ export default function TaquillaPosSystem() {
                     setNuevoComercioEmail("");
                     setAlertaSistema({
                       tipo: "exito",
-                      mensaje: `Tenant "${nuevo.nombre}" creado con aislamiento RLS activo (tenant_id: ${nuevo.id.slice(
+                      mensaje: `Tenant "${
+                        nuevo.nombre
+                      }" creado con aislamiento RLS activo (tenant_id: ${nuevo.id.slice(
                         0,
                         8
                       )}...).`,
@@ -1818,7 +1988,6 @@ export default function TaquillaPosSystem() {
               </div>
             </div>
 
-            {/* Tabla de Monitoreo Multi-Tenant Aislado */}
             <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-xl p-5">
               <h3 className="text-sm font-bold text-white mb-3">
                 Comercios Activos en la Plataforma (Fondos y Cajas 100% Aislados)
@@ -1857,46 +2026,6 @@ export default function TaquillaPosSystem() {
           </div>
         )}
       </main>
-
-      {/* =====================================================================
-          PLANTILLA EXCLUSIVA DE IMPRESIÓN TÉRMICA ESC/POS (58mm / 80mm)
-          Solo visible al disparar `window.print()` o vista previa de rollo térmico
-         ===================================================================== */}
-      {ultimoTicketImpreso && (
-        <div className="hidden print:block print:w-[58mm] print:p-1 print:text-black print:bg-white print:font-mono print:text-[11px]">
-          <div className="text-center font-bold border-b border-black pb-1">
-            <div>{ultimoTicketImpreso.comercioNombre.toUpperCase()}</div>
-            <div>RIF: {ultimoTicketImpreso.comercioRif} | LOTTO ACTIVO</div>
-          </div>
-          <div className="py-1 border-b border-black">
-            <div>TICKET: #{ultimoTicketImpreso.serialCorto}</div>
-            <div>FECHA : {ultimoTicketImpreso.fechaHoraEmision}</div>
-            <div>CAJERO: {ultimoTicketImpreso.cajeroNombre}</div>
-            <div>TASA  : Bs. {ultimoTicketImpreso.tasaBcv.toFixed(2)} / USD</div>
-          </div>
-          <div className="py-1 border-b border-black">
-            {ultimoTicketImpreso.items.map((it, idx) => (
-              <div key={idx} className="flex justify-between">
-                <span>
-                  {it.sorteoHora} #{it.codigoAnimal} {it.nombreAnimal}
-                </span>
-                <span>${it.montoUsd.toFixed(2)}</span>
-              </div>
-            ))}
-          </div>
-          <div className="py-1 font-bold text-right border-b border-black">
-            <div>TOTAL USD: ${ultimoTicketImpreso.totalUsd.toFixed(2)}</div>
-            <div>TOTAL BS : Bs. {ultimoTicketImpreso.totalBs.toFixed(2)}</div>
-          </div>
-          <div className="text-center pt-1 text-[9px] break-all">
-            <div>FIRMA HMAC-SHA256:</div>
-            <div>{ultimoTicketImpreso.codigoSeguridadHmac}</div>
-            <div className="mt-1 font-bold">
-              QR: {ultimoTicketImpreso.qrPayload}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

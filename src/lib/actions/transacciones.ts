@@ -59,7 +59,9 @@ export async function generarFirmaHmacTicket(
  * - Congela la tasa oficial BCV en `tasa_cambio` y firma el ticket con HMAC-SHA256.
  */
 export async function emitirTicket(
-  jugadas: JugadaInput[]
+  jugadas: JugadaInput[],
+  clienteTelefono?: string,
+  canalEntrega: "WHATSAPP" | "TERMICA_ESCPOS" | "AMBOS" = "WHATSAPP"
 ): Promise<EmitirTicketResultado> {
   try {
     if (!jugadas || jugadas.length === 0) {
@@ -75,6 +77,8 @@ export async function emitirTicket(
     const { data, error } = await supabase.rpc("emitir_ticket", {
       p_jugadas: jugadas,
       p_secret_key: SERVER_HMAC_SECRET,
+      p_cliente_telefono: clienteTelefono ?? null,
+      p_canal_entrega: canalEntrega,
     });
 
     if (error) {
