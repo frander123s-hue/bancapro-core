@@ -2,11 +2,11 @@
   "crons": [
     {
       "path": "/api/cron/resultados",
-      "schedule": "*/10 12-23 * * *"
+      "schedule": "0 13 * * *"
     },
     {
       "path": "/api/cron/bcv",
-      "schedule": "0 */6 * * *"
+      "schedule": "0 12 * * *"
     }
   ]
 }
