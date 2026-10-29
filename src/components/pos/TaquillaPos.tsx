@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useMemo } from "react";
+import Link from "next/link";
 import {
   CATALOGO_LOTTO_ACTIVO,
   HORARIOS_OFICIALES_LOTTO_ACTIVO,
@@ -56,6 +57,7 @@ import {
   KeyRound,
   LogOut,
   ArrowLeftRight,
+  BookOpen,
 } from "lucide-react";
 
 interface JugadaCarrito {
@@ -1673,6 +1675,13 @@ export default function TaquillaPosSystem() {
                 <TrendingUp className="w-3.5 h-3.5" />
                 3. Caja & Cupos
               </button>
+              <Link
+                href="/manual"
+                className="ml-1 px-3 py-1.5 rounded-md text-xs font-semibold bg-sky-950/80 hover:bg-sky-900 text-sky-300 border border-sky-500/40 transition flex items-center gap-1.5"
+              >
+                <BookOpen className="w-3.5 h-3.5 text-sky-400" />
+                Manual / PDF
+              </Link>
               <button
                 onClick={() => setEnPortalSuperAdmin(true)}
                 className="ml-1 px-3 py-1.5 rounded-md text-xs font-semibold bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-500/40 transition flex items-center gap-1.5"
