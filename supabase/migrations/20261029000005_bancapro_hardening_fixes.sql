@@ -96,12 +96,12 @@ BEGIN
 
     v_total_bs := ROUND(v_total_usd * v_tasa_bcv, 2);
 
-    -- Firma criptográfica HMAC-SHA256 (pgcrypto en esquema extensions)
+    -- Firma criptográfica HMAC-SHA256 (pgcrypto en esquema extensions con firma explícita bytea, bytea, text)
     v_codigo_seguridad := encode(
         extensions.hmac(
-            v_tenant_id::TEXT || '|' || v_ticket_id::TEXT || '|' || v_total_usd::TEXT || '|' || v_timestamp_epoch::TEXT,
-            COALESCE(NULLIF(p_secret_key, ''), 'bancapro_prod_hmac_sha256_secret_key_9f8e7d6c5b4a3210')::bytea,
-            'sha256'
+            convert_to(v_tenant_id::TEXT || '|' || v_ticket_id::TEXT || '|' || v_total_usd::TEXT || '|' || v_timestamp_epoch::TEXT, 'UTF8'),
+            convert_to(COALESCE(NULLIF(p_secret_key, ''), 'bancapro_prod_hmac_sha256_secret_key_9f8e7d6c5b4a3210'), 'UTF8'),
+            'sha256'::TEXT
         ),
         'hex'
     );
