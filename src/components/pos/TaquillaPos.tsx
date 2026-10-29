@@ -58,6 +58,12 @@ import {
   LogOut,
   ArrowLeftRight,
   BookOpen,
+  Users,
+  UserCheck,
+  Download,
+  FileSpreadsheet,
+  QrCode,
+  Wifi,
 } from "lucide-react";
 
 interface JugadaCarrito {
@@ -74,6 +80,8 @@ interface TicketHistoricoLocal {
   serialCorto: string;
   pinReclamo: string; // Formato corto fácil de dictar/enviar por WhatsApp: 0001041-9F4C2E81
   clienteTelefono: string;
+  cajeroId?: string;
+  cajeroNombre?: string;
   canalEntrega: "WHATSAPP" | "TERMICA_ESCPOS" | "AMBOS";
   tenantNombre: string;
   tenantRif: string;
@@ -96,6 +104,26 @@ interface TicketHistoricoLocal {
     montoUsd: number;
     premioPotencialUsd: number;
   }>;
+}
+
+interface CajeroComercio {
+  id: string;
+  nombre: string;
+  turno: string;
+  activo: boolean;
+}
+
+interface ConfigWhatsAppComercio {
+  modoVinculacion: "DIRECTO_WA_ME" | "API_CLOUD_GATEWAY";
+  subModoApi: "META_CLOUD" | "GATEWAY_QR";
+  telefonoComercio: string;
+  metaToken: string;
+  metaPhoneId: string;
+  gatewayUrl: string;
+  gatewayToken: string;
+  instanciaId: string;
+  qrVinculado: boolean;
+  ultimaSincronizacion: string;
 }
 
 interface TenantComercio {
@@ -216,7 +244,119 @@ export default function TaquillaPosSystem() {
     },
   });
 
-  // Historial de Tickets Emitidos en la sesión (Aislados por Tenant)
+  // Cajeros / Operadores de Caja por Comercio (Tenant)
+  const [cajerosPorTenant, setCajerosPorTenant] = useState<
+    Record<string, CajeroComercio[]>
+  >({
+    "11111111-1111-4111-8111-111111111111": [
+      {
+        id: "caj-magaly-1",
+        nombre: "Magaly Rodríguez (Encargada)",
+        turno: "Turno Completo",
+        activo: true,
+      },
+      {
+        id: "caj-magaly-2",
+        nombre: "Carlos Pérez (Caja 1)",
+        turno: "Mañana (08:00 AM - 01:00 PM)",
+        activo: true,
+      },
+      {
+        id: "caj-magaly-3",
+        nombre: "Yulimar Gómez (Caja 2)",
+        turno: "Tarde (01:00 PM - 07:00 PM)",
+        activo: true,
+      },
+    ],
+    "33333333-3333-4333-8333-333333333333": [
+      {
+        id: "caj-suerte-1",
+        nombre: "Roberto Méndez (Encargado)",
+        turno: "Mañana",
+        activo: true,
+      },
+      {
+        id: "caj-suerte-2",
+        nombre: "Ana Bolívar (Caja Principal)",
+        turno: "Tarde",
+        activo: true,
+      },
+    ],
+  });
+
+  const [cajeroSeleccionadoPorTenant, setCajeroSeleccionadoPorTenant] =
+    useState<Record<string, string>>({
+      "11111111-1111-4111-8111-111111111111": "caj-magaly-1",
+      "33333333-3333-4333-8333-333333333333": "caj-suerte-1",
+    });
+
+  const [mostrandoFormNuevoCajero, setMostrandoFormNuevoCajero] =
+    useState<boolean>(false);
+  const [nuevoCajeroNombreInput, setNuevoCajeroNombreInput] =
+    useState<string>("");
+  const [nuevoCajeroTurnoInput, setNuevoCajeroTurnoInput] =
+    useState<string>("Turno Mañana");
+
+  const cajerosDelComercioActual = useMemo(
+    () =>
+      cajerosPorTenant[tenantActual.id] ?? [
+        {
+          id: "caj-default",
+          nombre: "Cajero Principal",
+          turno: "General",
+          activo: true,
+        },
+      ],
+    [cajerosPorTenant, tenantActual.id]
+  );
+
+  const cajeroActivoActual = useMemo(() => {
+    const idSel = cajeroSeleccionadoPorTenant[tenantActual.id];
+    return (
+      cajerosDelComercioActual.find((c) => c.id === idSel) ??
+      cajerosDelComercioActual[0]
+    );
+  }, [cajeroSeleccionadoPorTenant, cajerosDelComercioActual, tenantActual.id]);
+
+  // Configuración Centralizada de Sincronización de WhatsApp por Comercio (administrada desde el Portal SuperAdmin)
+  const [configWhatsAppPorTenant, setConfigWhatsAppPorTenant] = useState<
+    Record<string, ConfigWhatsAppComercio>
+  >({
+    "11111111-1111-4111-8111-111111111111": {
+      modoVinculacion: "DIRECTO_WA_ME",
+      subModoApi: "GATEWAY_QR",
+      telefonoComercio: "+58 414-1234567",
+      metaToken: "",
+      metaPhoneId: "",
+      gatewayUrl: "https://api.bancapro-wa.local/instance/bodega-magaly/send",
+      gatewayToken: "wa_live_magaly_998123a",
+      instanciaId: "INST-MAGALY-01",
+      qrVinculado: true,
+      ultimaSincronizacion: "Sincronizado por SuperAdmin (Activo)",
+    },
+    "33333333-3333-4333-8333-333333333333": {
+      modoVinculacion: "API_CLOUD_GATEWAY",
+      subModoApi: "GATEWAY_QR",
+      telefonoComercio: "+58 412-9876543",
+      metaToken: "",
+      metaPhoneId: "",
+      gatewayUrl: "https://api.bancapro-wa.local/instance/la-suerte/send",
+      gatewayToken: "wa_live_suerte_77412b",
+      instanciaId: "INST-SUERTE-02",
+      qrVinculado: true,
+      ultimaSincronizacion: "Sincronizado por SuperAdmin (Activo)",
+    },
+  });
+
+  const [comercioAdminSeleccionadoId, setComercioAdminSeleccionadoId] =
+    useState<string>("11111111-1111-4111-8111-111111111111");
+  const [comercioEliminarConfirmId, setComercioEliminarConfirmId] = useState<
+    string | null
+  >(null);
+  const [mostrandoQrSuperAdmin, setMostrandoQrSuperAdmin] =
+    useState<boolean>(false);
+
+  // Historial de Tickets Emitidos en la Semana (Aislados por Tenant, con Cajero registrado)
   const [ticketsPorTenant, setTicketsPorTenant] = useState<
     Record<string, TicketHistoricoLocal[]>
   >({
@@ -226,6 +366,8 @@ export default function TaquillaPosSystem() {
         serialCorto: "0001041",
         pinReclamo: "0001041-9F4C2E81",
         clienteTelefono: "0414-1234567",
+        cajeroId: "caj-magaly-1",
+        cajeroNombre: "Magaly Rodríguez (Encargada)",
         canalEntrega: "WHATSAPP",
         tenantNombre: "Bodega Piloto Magaly",
         tenantRif: "J-40123987-1",
@@ -251,6 +393,131 @@ export default function TaquillaPosSystem() {
             nombreAnimal: "León",
             montoUsd: 2.0,
             premioPotencialUsd: 60.0,
+          },
+        ],
+      },
+      {
+        ticketId: "b7098c1a-f86e-11da-bd1a-00112444be2f",
+        serialCorto: "0001040",
+        pinReclamo: "0001040-7A12C4E9",
+        clienteTelefono: "0412-5558899",
+        cajeroId: "caj-magaly-2",
+        cajeroNombre: "Carlos Pérez (Caja 1)",
+        canalEntrega: "WHATSAPP",
+        tenantNombre: "Bodega Piloto Magaly",
+        tenantRif: "J-40123987-1",
+        fechaHora: "28/10/2026 02:15:40 PM",
+        timestampEmisionMs: Date.now() - 86400_000,
+        tasaBcv: 45.85,
+        totalUsd: 3.5,
+        totalBs: 160.48,
+        codigoSeguridad:
+          "7a12c4e9b6a04d3e71289a0c55f1e2d3c4b5a697887766554433221100aabbcc",
+        qrPayload:
+          "BANCAPRO|11111111-1111-4111-8111-111111111111|b7098c1a-f86e-11da-bd1a-00112444be2f|3.50|1793191540|7a12c4e9b6a04d3e71289a0c55f1e2d3c4b5a697887766554433221100aabbcc",
+        mensajeWhatsApp:
+          "🎟️ *COMPROBANTE OFICIAL - BODEGA PILOTO MAGALY*\n📌 *TICKET N°:* #0001040\n🔐 *CÓDIGO PARA RECLAMAR PREMIO:* 0001040-7A12C4E9",
+        estado: "PERDEDOR",
+        premioTotalUsd: 0,
+        items: [
+          {
+            sorteoId: 7,
+            sorteoHora: "03:00 PM",
+            dbNumber: 0,
+            codigoAnimal: "0",
+            nombreAnimal: "Delfín",
+            montoUsd: 2.0,
+            premioPotencialUsd: 60.0,
+          },
+          {
+            sorteoId: 7,
+            sorteoHora: "03:00 PM",
+            dbNumber: 12,
+            codigoAnimal: "12",
+            nombreAnimal: "Caballo",
+            montoUsd: 1.5,
+            premioPotencialUsd: 45.0,
+          },
+        ],
+      },
+      {
+        ticketId: "c6098c1a-f86e-11da-bd1a-00112444be3a",
+        serialCorto: "0001039",
+        pinReclamo: "0001039-3D88E1B2",
+        clienteTelefono: "0424-9991122",
+        cajeroId: "caj-magaly-3",
+        cajeroNombre: "Yulimar Gómez (Caja 2)",
+        canalEntrega: "WHATSAPP",
+        tenantNombre: "Bodega Piloto Magaly",
+        tenantRif: "J-40123987-1",
+        fechaHora: "27/10/2026 04:20:10 PM",
+        timestampEmisionMs: Date.now() - 172800_000,
+        tasaBcv: 45.8,
+        totalUsd: 5.0,
+        totalBs: 229.0,
+        codigoSeguridad:
+          "3d88e1b2b6a04d3e71289a0c55f1e2d3c4b5a697887766554433221100aabbcc",
+        qrPayload:
+          "BANCAPRO|11111111-1111-4111-8111-111111111111|c6098c1a-f86e-11da-bd1a-00112444be3a|5.00|1793105210|3d88e1b2b6a04d3e71289a0c55f1e2d3c4b5a697887766554433221100aabbcc",
+        mensajeWhatsApp:
+          "🎟️ *COMPROBANTE OFICIAL - BODEGA PILOTO MAGALY*\n📌 *TICKET N°:* #0001039\n🔐 *CÓDIGO PARA RECLAMAR PREMIO:* 0001039-3D88E1B2",
+        estado: "PAGADO",
+        premioTotalUsd: 30.0,
+        items: [
+          {
+            sorteoId: 9,
+            sorteoHora: "05:00 PM",
+            dbNumber: 28,
+            codigoAnimal: "28",
+            nombreAnimal: "Zamuro",
+            montoUsd: 1.0,
+            premioPotencialUsd: 30.0,
+          },
+          {
+            sorteoId: 9,
+            sorteoHora: "05:00 PM",
+            dbNumber: 36,
+            codigoAnimal: "36",
+            nombreAnimal: "Culebra",
+            montoUsd: 4.0,
+            premioPotencialUsd: 120.0,
+          },
+        ],
+      },
+    ],
+    "33333333-3333-4333-8333-333333333333": [
+      {
+        ticketId: "d5098c1a-f86e-11da-bd1a-00112444be4b",
+        serialCorto: "0002015",
+        pinReclamo: "0002015-5E91A0C3",
+        clienteTelefono: "0414-7773344",
+        cajeroId: "caj-suerte-1",
+        cajeroNombre: "Roberto Méndez (Encargado)",
+        canalEntrega: "WHATSAPP",
+        tenantNombre: "Agencia La Suerte Centro",
+        tenantRif: "J-50291823-9",
+        fechaHora: "29/10/2026 09:10:05 AM",
+        timestampEmisionMs: Date.now() - 7200_000,
+        tasaBcv: 45.85,
+        totalUsd: 4.0,
+        totalBs: 183.4,
+        codigoSeguridad:
+          "5e91a0c3b6a04d3e71289a0c55f1e2d3c4b5a697887766554433221100aabbcc",
+        qrPayload:
+          "BANCAPRO|33333333-3333-4333-8333-333333333333|d5098c1a-f86e-11da-bd1a-00112444be4b|4.00|1793275005|5e91a0c3b6a04d3e71289a0c55f1e2d3c4b5a697887766554433221100aabbcc",
+        mensajeWhatsApp:
+          "🎟️ *COMPROBANTE OFICIAL - AGENCIA LA SUERTE CENTRO*\n📌 *TICKET N°:* #0002015\n🔐 *CÓDIGO PARA RECLAMAR PREMIO:* 0002015-5E91A0C3",
+        estado: "EMITIDO",
+        premioTotalUsd: 0,
+        items: [
+          {
+            sorteoId: 2,
+            sorteoHora: "10:00 AM",
+            dbNumber: 19,
+            codigoAnimal: "19",
+            nombreAnimal: "Chivo",
+            montoUsd: 4.0,
+            premioPotencialUsd: 120.0,
           },
         ],
       },
@@ -751,7 +1018,10 @@ export default function TaquillaPosSystem() {
       const datosImpresion: DatosTicketTermico = {
         comercioNombre: tenantActual.nombre,
         comercioRif: tenantActual.rif,
-        cajeroNombre: usuarioSesion?.nombre || "Magaly Rodríguez",
+        cajeroNombre:
+          cajeroActivoActual?.nombre ||
+          usuarioSesion?.nombre ||
+          "Magaly Rodríguez",
         serialCorto: serialCortoFinal,
         fechaHoraEmision: fechaStr,
         tasaBcv,
@@ -780,6 +1050,11 @@ export default function TaquillaPosSystem() {
         serialCorto: serialCortoFinal,
         pinReclamo: pinReclamoCorto,
         clienteTelefono: clienteTelefonoInput,
+        cajeroId: cajeroActivoActual?.id || "caj-default",
+        cajeroNombre:
+          cajeroActivoActual?.nombre ||
+          usuarioSesion?.nombre ||
+          "Magaly Rodríguez",
         canalEntrega: modoEntrega,
         tenantNombre: tenantActual.nombre,
         tenantRif: tenantActual.rif,
@@ -817,6 +1092,7 @@ export default function TaquillaPosSystem() {
       setCarrito([]);
 
       if (modoEntrega === "WHATSAPP" || modoEntrega === "AMBOS") {
+        const configWaComercio = configWhatsAppPorTenant[tenantActual.id];
         try {
           const respWa = await fetch("/api/whatsapp/send", {
             method: "POST",
@@ -825,6 +1101,7 @@ export default function TaquillaPosSystem() {
               telefono: clienteTelefonoInput,
               mensajeTexto: textoWhatsApp,
               qrPayload: qrPayloadFinal,
+              configComercio: configWaComercio,
             }),
           });
           const waJson = await respWa.json();
@@ -945,6 +1222,230 @@ export default function TaquillaPosSystem() {
       tipo: "info",
       mensaje: `Ticket #${ticket.serialCorto} ANULADO correctamente dentro de la ventana de 60 segundos. Cupos revertidos.`,
     });
+  };
+
+  // Generación y Descarga del Reporte Semanal Detallado por Comercio (CSV para Excel + Vista Ejecutiva PDF)
+  const descargarReporteSemanalCsv = (idComercio: string) => {
+    const comercio = tenants.find((t) => t.id === idComercio);
+    if (!comercio) return;
+    const listaTickets = ticketsPorTenant[idComercio] ?? [];
+
+    const ticketsValidos = listaTickets.filter((t) => t.estado !== "ANULADO");
+    const totalVentasUsd = ticketsValidos.reduce(
+      (acc, t) => acc + t.totalUsd,
+      0
+    );
+    const totalVentasBs = ticketsValidos.reduce((acc, t) => acc + t.totalBs, 0);
+    const totalPremiosUsd = ticketsValidos.reduce(
+      (acc, t) => acc + t.premioTotalUsd,
+      0
+    );
+    const totalPremiosBs = totalPremiosUsd * tasaBcv;
+    const utilidadNetaUsd = totalVentasUsd - totalPremiosUsd;
+    const utilidadNetaBs = totalVentasBs - totalPremiosBs;
+
+    // Resumen por Cajero
+    const resumenPorCajero: Record<
+      string,
+      { tickets: number; usd: number; bs: number }
+    > = {};
+    for (const tk of ticketsValidos) {
+      const nom = tk.cajeroNombre || "Cajero Principal";
+      if (!resumenPorCajero[nom]) {
+        resumenPorCajero[nom] = { tickets: 0, usd: 0, bs: 0 };
+      }
+      resumenPorCajero[nom].tickets += 1;
+      resumenPorCajero[nom].usd += tk.totalUsd;
+      resumenPorCajero[nom].bs += tk.totalBs;
+    }
+
+    const filasCsv: string[] = [
+      `REPORTE SEMANAL DETALLADO DE VENTAS - BANCAPRO CORE`,
+      `Comercio;${comercio.nombre}`,
+      `RIF;${comercio.rif}`,
+      `Fecha de Generacion;${new Date().toLocaleString("es-VE")}`,
+      `Tasa Oficial BCV Vigente;Bs. ${tasaBcv.toFixed(2)} / USD`,
+      ``,
+      `RESUMEN EJECUTIVO DE LA SEMANA`,
+      `Total Tickets Validos;${ticketsValidos.length}`,
+      `Total Ventas Brutas (Bs.);Bs. ${totalVentasBs.toFixed(2)}`,
+      `Total Ventas Brutas (USD);$${totalVentasUsd.toFixed(2)}`,
+      `Total Premios Generados (Bs.);Bs. ${totalPremiosBs.toFixed(2)}`,
+      `Total Premios Generados (USD);$${totalPremiosUsd.toFixed(2)}`,
+      `Utilidad Neta del Comercio (Bs.);Bs. ${utilidadNetaBs.toFixed(2)}`,
+      `Utilidad Neta del Comercio (USD);$${utilidadNetaUsd.toFixed(2)}`,
+      ``,
+      `DESGLOSE SEMANAL POR CAJERO EN CAJA`,
+      `Cajero / Operador;Tickets Emitidos;Ventas en Bs.;Ventas en USD`,
+      ...Object.entries(resumenPorCajero).map(
+        ([caj, datos]) =>
+          `${caj};${datos.tickets};Bs. ${datos.bs.toFixed(
+            2
+          )};$${datos.usd.toFixed(2)}`
+      ),
+      ``,
+      `DETALLE COMPLETO JUGADA POR JUGADA DE LA SEMANA`,
+      `Fecha y Hora;N Ticket;PIN Reclamo;Cajero en Caja;WhatsApp Cliente;Horario Sorteo;Codigo Animal;Nombre Animal;Apuesta (Bs.);Apuesta (USD);Premio Potencial 30x (Bs.);Premio Potencial 30x (USD);Estado Ticket;Premio Ganado Ticket (USD)`,
+    ];
+
+    for (const tk of listaTickets) {
+      for (const it of tk.items) {
+        const apuestaBs = Number((it.montoUsd * tk.tasaBcv).toFixed(2));
+        const premioPotBs = Number(
+          (it.premioPotencialUsd * tk.tasaBcv).toFixed(2)
+        );
+        filasCsv.push(
+          [
+            tk.fechaHora,
+            `#${tk.serialCorto}`,
+            tk.pinReclamo,
+            tk.cajeroNombre || "Magaly Rodríguez (Encargada)",
+            tk.clienteTelefono,
+            it.sorteoHora,
+            `#${it.codigoAnimal}`,
+            it.nombreAnimal,
+            `Bs. ${apuestaBs.toFixed(2)}`,
+            `$${it.montoUsd.toFixed(2)}`,
+            `Bs. ${premioPotBs.toFixed(2)}`,
+            `$${it.premioPotencialUsd.toFixed(2)}`,
+            tk.estado,
+            `$${tk.premioTotalUsd.toFixed(2)}`,
+          ].join(";")
+        );
+      }
+    }
+
+    const contenidoCsv = "\uFEFF" + filasCsv.join("\r\n");
+    const blob = new Blob([contenidoCsv], {
+      type: "text/csv;charset=utf-8;",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const slug = comercio.nombre.replace(/\s+/g, "_").toLowerCase();
+    link.href = url;
+    link.setAttribute("download", `Reporte_Semanal_${slug}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    setAlertaSistema({
+      tipo: "exito",
+      mensaje: `Reporte Semanal Detallado (CSV / Excel) descargado para "${comercio.nombre}".`,
+    });
+  };
+
+  const imprimirReporteSemanalEjecutivo = (idComercio: string) => {
+    const comercio = tenants.find((t) => t.id === idComercio);
+    if (!comercio || typeof window === "undefined") return;
+    const listaTickets = ticketsPorTenant[idComercio] ?? [];
+    const ticketsValidos = listaTickets.filter((t) => t.estado !== "ANULADO");
+    const totalVentasUsd = ticketsValidos.reduce(
+      (acc, t) => acc + t.totalUsd,
+      0
+    );
+    const totalVentasBs = ticketsValidos.reduce((acc, t) => acc + t.totalBs, 0);
+    const totalPremiosUsd = ticketsValidos.reduce(
+      (acc, t) => acc + t.premioTotalUsd,
+      0
+    );
+    const totalPremiosBs = totalPremiosUsd * tasaBcv;
+    const utilidadUsd = totalVentasUsd - totalPremiosUsd;
+    const utilidadBs = totalVentasBs - totalPremiosBs;
+
+    const filasHtml = listaTickets
+      .map((tk) => {
+        const detalleStr = tk.items
+          .map(
+            (i) =>
+              `${i.sorteoHora}: #${i.codigoAnimal} ${i.nombreAnimal} (Bs. ${(
+                i.montoUsd * tk.tasaBcv
+              ).toFixed(2)} / $${i.montoUsd.toFixed(2)})`
+          )
+          .join("<br/>");
+        return `<tr>
+          <td>${tk.fechaHora}</td>
+          <td><strong>#${tk.serialCorto}</strong><br/><small>${
+          tk.pinReclamo
+        }</small></td>
+          <td>${tk.cajeroNombre || "Magaly Rodríguez"}</td>
+          <td>${tk.clienteTelefono}</td>
+          <td>${detalleStr}</td>
+          <td><strong>Bs. ${tk.totalBs.toFixed(
+            2
+          )}</strong><br/><small>$${tk.totalUsd.toFixed(2)} USD</small></td>
+          <td>${tk.estado}</td>
+          <td>Bs. ${(tk.premioTotalUsd * tk.tasaBcv).toFixed(
+            2
+          )} ($${tk.premioTotalUsd.toFixed(2)})</td>
+        </tr>`;
+      })
+      .join("");
+
+    const htmlDoc = `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Reporte Semanal - ${comercio.nombre}</title>
+  <style>
+    body { font-family: Arial, sans-serif; color: #0f172a; margin: 24px; }
+    h1 { font-size: 20px; margin-bottom: 4px; }
+    .sub { font-size: 12px; color: #475569; margin-bottom: 16px; }
+    .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+    .kpi { border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; background: #f8fafc; }
+    .kpi-title { font-size: 10px; text-transform: uppercase; color: #64748b; font-weight: bold; }
+    .kpi-val { font-size: 15px; font-weight: bold; margin-top: 4px; color: #0f172a; }
+    table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    th { background: #0f172a; color: #fff; text-align: left; padding: 8px; }
+    td { border-bottom: 1px solid #cbd5e1; padding: 7px; vertical-align: top; }
+  </style>
+</head>
+<body>
+  <h1>📊 REPORTE SEMANAL DETALLADO DE VENTAS — ${comercio.nombre.toUpperCase()}</h1>
+  <div class="sub">RIF: ${comercio.rif} • Admin: ${
+      comercio.adminEmail
+    } • Generado: ${new Date().toLocaleString(
+      "es-VE"
+    )} • Tasa BCV: Bs. ${tasaBcv.toFixed(2)} / USD</div>
+  <div class="kpis">
+    <div class="kpi"><div class="kpi-title">Tickets Válidos</div><div class="kpi-val">${
+      ticketsValidos.length
+    } tickets</div></div>
+    <div class="kpi"><div class="kpi-title">Total Ventas Semana</div><div class="kpi-val">Bs. ${totalVentasBs.toFixed(
+      2
+    )} ($${totalVentasUsd.toFixed(2)})</div></div>
+    <div class="kpi"><div class="kpi-title">Total Premios (30x)</div><div class="kpi-val">Bs. ${totalPremiosBs.toFixed(
+      2
+    )} ($${totalPremiosUsd.toFixed(2)})</div></div>
+    <div class="kpi"><div class="kpi-title">Utilidad Neta Caja</div><div class="kpi-val">Bs. ${utilidadBs.toFixed(
+      2
+    )} ($${utilidadUsd.toFixed(2)})</div></div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Fecha / Hora</th>
+        <th>Ticket / PIN</th>
+        <th>Cajero en Caja</th>
+        <th>WhatsApp Cliente</th>
+        <th>Jugadas Detalladas (Sorteo y Animalito)</th>
+        <th>Monto Jugado</th>
+        <th>Estado</th>
+        <th>Premio</th>
+      </tr>
+    </thead>
+    <tbody>${filasHtml}</tbody>
+  </table>
+  <script>window.onload = () => { window.print(); };</script>
+</body>
+</html>`;
+
+    const win = window.open("", "_blank", "width=1024,height=768");
+    if (win) {
+      win.document.open();
+      win.document.write(htmlDoc);
+      win.document.close();
+    }
   };
 
   const verificarQrParaCobro = (valorInput?: string) => {
@@ -1439,8 +1940,9 @@ export default function TaquillaPosSystem() {
                         if (!nuevoComercioNombre || !nuevoComercioRif) return;
                         const perdida =
                           parseFloat(nuevoComercioPerdidaMax) || 300;
+                        const nuevoId = crypto.randomUUID();
                         const nuevo: TenantComercio = {
-                          id: crypto.randomUUID(),
+                          id: nuevoId,
                           nombre: nuevoComercioNombre,
                           rif: nuevoComercioRif,
                           telefono: "+58 414-0000000",
@@ -1452,14 +1954,61 @@ export default function TaquillaPosSystem() {
                           activo: true,
                         };
                         setTenants((prev) => [...prev, nuevo]);
+                        setCajerosPorTenant((prev) => ({
+                          ...prev,
+                          [nuevoId]: [
+                            {
+                              id: `caj-${nuevoId.slice(0, 6)}-1`,
+                              nombre: `Encargado Principal (${nuevoComercioNombre})`,
+                              turno: "Turno Completo",
+                              activo: true,
+                            },
+                            {
+                              id: `caj-${nuevoId.slice(0, 6)}-2`,
+                              nombre: "Cajero Caja 1",
+                              turno: "Mañana / Tarde",
+                              activo: true,
+                            },
+                          ],
+                        }));
+                        setCajeroSeleccionadoPorTenant((prev) => ({
+                          ...prev,
+                          [nuevoId]: `caj-${nuevoId.slice(0, 6)}-1`,
+                        }));
+                        setConfigWhatsAppPorTenant((prev) => ({
+                          ...prev,
+                          [nuevoId]: {
+                            modoVinculacion: "DIRECTO_WA_ME",
+                            subModoApi: "GATEWAY_QR",
+                            telefonoComercio: "+58 414-0000000",
+                            metaToken: "",
+                            metaPhoneId: "",
+                            gatewayUrl: `https://api.bancapro-wa.local/instance/${nuevoId.slice(
+                              0,
+                              8
+                            )}/send`,
+                            gatewayToken: `wa_token_${nuevoId.slice(0, 8)}`,
+                            instanciaId: `INST-${nuevoId
+                              .slice(0, 6)
+                              .toUpperCase()}`,
+                            qrVinculado: true,
+                            ultimaSincronizacion:
+                              "Sincronizado por SuperAdmin (Recién Creado)",
+                          },
+                        }));
+                        setTicketsPorTenant((prev) => ({
+                          ...prev,
+                          [nuevoId]: [],
+                        }));
+                        setComercioAdminSeleccionadoId(nuevoId);
                         setNuevoComercioNombre("");
                         setNuevoComercioRif("");
                         setNuevoComercioEmail("");
                         setAlertaSistema({
                           tipo: "exito",
-                          mensaje: `Tenant "${
+                          mensaje: `Comercio "${
                             nuevo.nombre
-                          }" creado con aislamiento RLS activo (tenant_id: ${nuevo.id.slice(
+                          }" creado con aislamiento RLS, cajeros iniciales y WhatsApp pre-configurado (tenant_id: ${nuevo.id.slice(
                             0,
                             8
                           )}...).`,
@@ -1467,69 +2016,833 @@ export default function TaquillaPosSystem() {
                       }}
                       className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold uppercase rounded-lg transition"
                     >
-                      Crear Tenant y Asignar Políticas RLS
+                      Crear Comercio y Asignar Políticas RLS
                     </button>
                   </div>
                 </div>
 
                 <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-xl p-5">
-                  <h3 className="text-sm font-bold text-white mb-3">
-                    Comercios Activos en la Plataforma (Fondos y Cajas 100% Aislados)
-                  </h3>
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                    <h3 className="text-sm font-bold text-white">
+                      Comercios Activos en la Plataforma (Crear, Auditar, Sincronizar WhatsApp y Eliminar)
+                    </h3>
+                    <span className="text-[11px] font-mono text-emerald-400">
+                      {tenants.length} comercios registrados
+                    </span>
+                  </div>
                   <div className="space-y-3">
-                    {tenants.map((t) => (
-                      <div
-                        key={t.id}
-                        className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3"
-                      >
-                        <div>
-                          <div className="font-bold text-sm text-white flex items-center gap-2">
-                            <span>{t.nombre}</span>
-                            <span className="text-[10px] font-mono bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded">
-                              {t.rif}
-                            </span>
-                            {tenantActualId === t.id && (
-                              <span className="text-[10px] font-mono bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded">
-                                Seleccionado en Taquilla
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-xs text-slate-400 font-mono mt-1">
-                            Admin: {t.adminEmail} • Tenant UUID:{" "}
-                            {t.id.slice(0, 12)}...
-                          </div>
-                        </div>
+                    {tenants.map((t) => {
+                      const waCfg = configWhatsAppPorTenant[t.id];
+                      const numTicketsSem = (ticketsPorTenant[t.id] ?? []).length;
+                      return (
+                        <div
+                          key={t.id}
+                          className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col gap-3"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <div className="font-bold text-sm text-white flex flex-wrap items-center gap-2">
+                                <span>{t.nombre}</span>
+                                <span className="text-[10px] font-mono bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded">
+                                  {t.rif}
+                                </span>
+                                {tenantActualId === t.id && (
+                                  <span className="text-[10px] font-mono bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded">
+                                    Activo en Taquilla POS
+                                  </span>
+                                )}
+                                <span className="text-[10px] font-mono bg-sky-500/15 text-sky-300 border border-sky-500/30 px-2 py-0.5 rounded flex items-center gap-1">
+                                  <Wifi className="w-3 h-3 text-emerald-400" />
+                                  WA:{" "}
+                                  {waCfg?.modoVinculacion === "API_CLOUD_GATEWAY"
+                                    ? "Opción 2 (API / QR Silencioso)"
+                                    : "Opción 1 (Directo / Web 1-Clic)"}
+                                </span>
+                              </div>
+                              <div className="text-xs text-slate-400 font-mono mt-1">
+                                Admin: {t.adminEmail} • Tickets Semana:{" "}
+                                <strong className="text-white">
+                                  {numTicketsSem}
+                                </strong>{" "}
+                                • UUID: {t.id.slice(0, 8)}...
+                              </div>
+                            </div>
 
-                        <div className="flex items-center gap-3">
-                          <div className="text-right font-mono text-xs">
-                            <div className="text-emerald-400 font-bold">
-                              Cupo Animal: ${t.cupoAnimalUsd.toFixed(2)} USD (Bs.{" "}
-                              {(t.cupoAnimalUsd * tasaBcv).toFixed(2)})
-                            </div>
-                            <div className="text-slate-400">
-                              Pérdida Máx: ${t.perdidaMaximaUsd.toFixed(2)} USD
+                            <div className="text-right font-mono text-xs">
+                              <div className="text-emerald-400 font-bold">
+                                Cupo Animal: ${t.cupoAnimalUsd.toFixed(2)} USD
+                                (Bs. {(t.cupoAnimalUsd * tasaBcv).toFixed(2)})
+                              </div>
+                              <div className="text-slate-400">
+                                Pérdida Máx: ${t.perdidaMaximaUsd.toFixed(2)}{" "}
+                                USD
+                              </div>
                             </div>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setTenantActualId(t.id);
-                              setCarrito([]);
-                              setAlertaSistema({
-                                tipo: "info",
-                                mensaje: `Taquilla vinculada al comercio: ${t.nombre}`,
-                              });
-                            }}
-                            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 border border-slate-700"
-                          >
-                            Inspeccionar
-                          </button>
+
+                          {/* Barra de Acciones del SuperAdmin sobre cada Comercio */}
+                          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/80">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTenantActualId(t.id);
+                                  setComercioAdminSeleccionadoId(t.id);
+                                  setCarrito([]);
+                                  setAlertaSistema({
+                                    tipo: "info",
+                                    mensaje: `Taquilla POS vinculada al comercio: ${t.nombre}`,
+                                  });
+                                }}
+                                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 border border-slate-700"
+                              >
+                                Seleccionar en POS
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setComercioAdminSeleccionadoId(t.id);
+                                  setAlertaSistema({
+                                    tipo: "info",
+                                    mensaje: `Configurando WhatsApp y Reporte Semanal para "${t.nombre}" en los paneles inferiores.`,
+                                  });
+                                }}
+                                className="px-3 py-1.5 rounded-lg bg-sky-950/80 hover:bg-sky-900 text-xs font-semibold text-sky-300 border border-sky-500/40 flex items-center gap-1.5"
+                              >
+                                <MessageCircle className="w-3.5 h-3.5 text-sky-400" />
+                                Sincronizar WhatsApp
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => descargarReporteSemanalCsv(t.id)}
+                                className="px-3 py-1.5 rounded-lg bg-emerald-950/80 hover:bg-emerald-900 text-xs font-semibold text-emerald-300 border border-emerald-500/40 flex items-center gap-1.5"
+                              >
+                                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                                Descargar Semanal (CSV)
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  imprimirReporteSemanalEjecutivo(t.id)
+                                }
+                                className="px-3 py-1.5 rounded-lg bg-purple-950/80 hover:bg-purple-900 text-xs font-semibold text-purple-300 border border-purple-500/40 flex items-center gap-1.5"
+                              >
+                                <Download className="w-3.5 h-3.5 text-purple-400" />
+                                Reporte PDF
+                              </button>
+                            </div>
+
+                            {/* Eliminación de Comercio con Confirmación en 2 Pasos */}
+                            <div>
+                              {comercioEliminarConfirmId === t.id ? (
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (tenants.length <= 1) {
+                                        setAlertaSistema({
+                                          tipo: "error",
+                                          mensaje:
+                                            "Debe mantener al menos 1 comercio activo en la plataforma.",
+                                        });
+                                        setComercioEliminarConfirmId(null);
+                                        return;
+                                      }
+                                      const restantes = tenants.filter(
+                                        (item) => item.id !== t.id
+                                      );
+                                      setTenants(restantes);
+                                      if (tenantActualId === t.id) {
+                                        setTenantActualId(restantes[0].id);
+                                      }
+                                      if (comercioAdminSeleccionadoId === t.id) {
+                                        setComercioAdminSeleccionadoId(
+                                          restantes[0].id
+                                        );
+                                      }
+                                      setComercioEliminarConfirmId(null);
+                                      setAlertaSistema({
+                                        tipo: "info",
+                                        mensaje: `Comercio "${t.nombre}" (${t.rif}) eliminado permanentemente del Portal SuperAdmin.`,
+                                      });
+                                    }}
+                                    className="px-2.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold"
+                                  >
+                                    Confirmar Eliminar
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setComercioEliminarConfirmId(null)
+                                    }
+                                    className="px-2.5 py-1.5 rounded-lg bg-slate-800 text-slate-300 text-xs"
+                                  >
+                                    Cancelar
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setComercioEliminarConfirmId(t.id)
+                                  }
+                                  className="px-3 py-1.5 rounded-lg bg-red-950/60 hover:bg-red-900/80 text-xs font-semibold text-red-300 border border-red-500/40 flex items-center gap-1"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                                  Eliminar Comercio
+                                </button>
+                              )}
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               </div>
+
+              {/* MÓDULO CENTRALIZADO SUPERADMIN: SINCRONIZACIÓN DE WHATSAPP AL COMERCIO (LAS 2 OPCIONES DE VINCULACIÓN) */}
+              {(() => {
+                const comercioSel =
+                  tenants.find((t) => t.id === comercioAdminSeleccionadoId) ??
+                  tenants[0];
+                const cfgWa = configWhatsAppPorTenant[comercioSel.id] ?? {
+                  modoVinculacion: "DIRECTO_WA_ME",
+                  subModoApi: "GATEWAY_QR",
+                  telefonoComercio: comercioSel.telefono,
+                  metaToken: "",
+                  metaPhoneId: "",
+                  gatewayUrl: "",
+                  gatewayToken: "",
+                  instanciaId: "INST-01",
+                  qrVinculado: true,
+                  ultimaSincronizacion: "Sincronizado",
+                };
+                const actualizarCfgWa = (
+                  parcial: Partial<ConfigWhatsAppComercio>
+                ) => {
+                  setConfigWhatsAppPorTenant((prev) => ({
+                    ...prev,
+                    [comercioSel.id]: {
+                      ...cfgWa,
+                      ...parcial,
+                    },
+                  }));
+                };
+
+                const ticketsComercioSemana =
+                  ticketsPorTenant[comercioSel.id] ?? [];
+                const ticketsSemanaValidos = ticketsComercioSemana.filter(
+                  (tk) => tk.estado !== "ANULADO"
+                );
+                const ventasSemanaUsd = ticketsSemanaValidos.reduce(
+                  (acc, tk) => acc + tk.totalUsd,
+                  0
+                );
+                const ventasSemanaBs = ticketsSemanaValidos.reduce(
+                  (acc, tk) => acc + tk.totalBs,
+                  0
+                );
+                const premiosSemanaUsd = ticketsSemanaValidos.reduce(
+                  (acc, tk) => acc + tk.premioTotalUsd,
+                  0
+                );
+                const premiosSemanaBs = premiosSemanaUsd * tasaBcv;
+                const netoSemanaUsd = ventasSemanaUsd - premiosSemanaUsd;
+                const netoSemanaBs = ventasSemanaBs - premiosSemanaBs;
+
+                // Agrupar ventas de la semana por Cajero
+                const ventasPorCajeroSemana: Record<
+                  string,
+                  { tickets: number; bs: number; usd: number }
+                > = {};
+                for (const tk of ticketsSemanaValidos) {
+                  const nom = tk.cajeroNombre || "Magaly Rodríguez (Encargada)";
+                  if (!ventasPorCajeroSemana[nom]) {
+                    ventasPorCajeroSemana[nom] = { tickets: 0, bs: 0, usd: 0 };
+                  }
+                  ventasPorCajeroSemana[nom].tickets += 1;
+                  ventasPorCajeroSemana[nom].bs += tk.totalBs;
+                  ventasPorCajeroSemana[nom].usd += tk.totalUsd;
+                }
+
+                return (
+                  <div className="space-y-6">
+                    {/* PANEL 1: SINCRONIZACIÓN DE WHATSAPP DEL COMERCIO (CON LAS 2 OPCIONES) */}
+                    <div className="bg-slate-900 border border-emerald-500/40 rounded-2xl p-6 space-y-5 shadow-xl">
+                      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
+                        <div className="flex items-center gap-3">
+                          <div className="p-2.5 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-400">
+                            <MessageCircle className="w-6 h-6" />
+                          </div>
+                          <div>
+                            <h3 className="text-base font-black text-white">
+                              Sincronización Centralizada de WhatsApp por Comercio (Cero Configuración para el Comercio)
+                            </h3>
+                            <p className="text-xs text-slate-400">
+                              Vincule aquí el WhatsApp del comercio seleccionado. El cajero del comercio no tendrá que tocar nada: solo vender y generar tickets.
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <label className="text-xs font-bold text-slate-300">
+                            Comercio a Configurar:
+                          </label>
+                          <select
+                            value={comercioSel.id}
+                            onChange={(e) =>
+                              setComercioAdminSeleccionadoId(e.target.value)
+                            }
+                            className="bg-slate-950 border border-emerald-500/50 rounded-lg px-3 py-2 text-xs font-bold text-emerald-300"
+                          >
+                            {tenants.map((t) => (
+                              <option key={t.id} value={t.id}>
+                                {t.nombre} ({t.rif})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Selector de las 2 Opciones de Vinculación de WhatsApp */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {/* OPCIÓN 1 */}
+                        <div
+                          onClick={() =>
+                            actualizarCfgWa({
+                              modoVinculacion: "DIRECTO_WA_ME",
+                              ultimaSincronizacion: `Opción 1 Activa (${new Date().toLocaleTimeString(
+                                "es-VE"
+                              )})`,
+                            })
+                          }
+                          className={`cursor-pointer rounded-xl p-4 border-2 transition space-y-2 ${
+                            cfgWa.modoVinculacion === "DIRECTO_WA_ME"
+                              ? "bg-emerald-950/50 border-emerald-500 shadow-lg"
+                              : "bg-slate-950/80 border-slate-800 hover:border-slate-700"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-mono font-black uppercase px-2.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                              OPCIÓN 1 • VINCULACIÓN DIRECTA / WEB (SIN COSTO)
+                            </span>
+                            {cfgWa.modoVinculacion === "DIRECTO_WA_ME" && (
+                              <span className="text-xs font-bold text-emerald-400 flex items-center gap-1">
+                                <CheckCircle2 className="w-4 h-4" />
+                                ACTIVA EN ESTE COMERCIO
+                              </span>
+                            )}
+                          </div>
+                          <h4 className="text-sm font-bold text-white">
+                            Despacho Directo a WhatsApp del Cliente (WhatsApp Web / App 1-Clic)
+                          </h4>
+                          <p className="text-xs text-slate-400 leading-relaxed">
+                            No requiere pagar APIs externas. Usted deja asignado el número del comercio y al emitir el ticket en taquilla se abre el comprobante criptográfico listo para enviar al cliente.
+                          </p>
+                        </div>
+
+                        {/* OPCIÓN 2 */}
+                        <div
+                          onClick={() =>
+                            actualizarCfgWa({
+                              modoVinculacion: "API_CLOUD_GATEWAY",
+                              ultimaSincronizacion: `Opción 2 Activa (${new Date().toLocaleTimeString(
+                                "es-VE"
+                              )})`,
+                            })
+                          }
+                          className={`cursor-pointer rounded-xl p-4 border-2 transition space-y-2 ${
+                            cfgWa.modoVinculacion === "API_CLOUD_GATEWAY"
+                              ? "bg-sky-950/50 border-sky-500 shadow-lg"
+                              : "bg-slate-950/80 border-slate-800 hover:border-slate-700"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-mono font-black uppercase px-2.5 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/40">
+                              OPCIÓN 2 • ENVÍO AUTOMÁTICO EN 2DO PLANO (API / QR)
+                            </span>
+                            {cfgWa.modoVinculacion === "API_CLOUD_GATEWAY" && (
+                              <span className="text-xs font-bold text-sky-400 flex items-center gap-1">
+                                <CheckCircle2 className="w-4 h-4" />
+                                ACTIVA EN ESTE COMERCIO
+                              </span>
+                            )}
+                          </div>
+                          <h4 className="text-sm font-bold text-white">
+                            Sincronización por Instancia QR (Evolution / UltraMsg) o Meta Cloud API
+                          </h4>
+                          <p className="text-xs text-slate-400 leading-relaxed">
+                            El ticket llega en 1 segundo al WhatsApp del cliente en segundo plano sin abrir ninguna ventana en la computadora de la caja.
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Parámetros de la Opción Seleccionada */}
+                      <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-4">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                          <div>
+                            <label className="block text-slate-400 mb-1 font-semibold">
+                              Teléfono WhatsApp Asignado al Comercio
+                            </label>
+                            <input
+                              type="text"
+                              value={cfgWa.telefonoComercio}
+                              onChange={(e) =>
+                                actualizarCfgWa({
+                                  telefonoComercio: e.target.value,
+                                })
+                              }
+                              placeholder="+58 414-1234567"
+                              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
+                            />
+                          </div>
+
+                          {cfgWa.modoVinculacion === "API_CLOUD_GATEWAY" ? (
+                            <>
+                              <div>
+                                <label className="block text-slate-400 mb-1 font-semibold">
+                                  Motor de Envío Silencioso (Opción 2)
+                                </label>
+                                <select
+                                  value={cfgWa.subModoApi}
+                                  onChange={(e) =>
+                                    actualizarCfgWa({
+                                      subModoApi: e.target.value as
+                                        | "META_CLOUD"
+                                        | "GATEWAY_QR",
+                                    })
+                                  }
+                                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white font-semibold"
+                                >
+                                  <option value="GATEWAY_QR">
+                                    2A. Instancia Gateway por Código QR (Evolution / UltraMsg)
+                                  </option>
+                                  <option value="META_CLOUD">
+                                    2B. Meta WhatsApp Cloud API Oficial (Token + Phone ID)
+                                  </option>
+                                </select>
+                              </div>
+
+                              {cfgWa.subModoApi === "GATEWAY_QR" ? (
+                                <div>
+                                  <label className="block text-slate-400 mb-1 font-semibold">
+                                    ID de Instancia / URL Gateway del Comercio
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={cfgWa.gatewayUrl}
+                                    onChange={(e) =>
+                                      actualizarCfgWa({
+                                        gatewayUrl: e.target.value,
+                                      })
+                                    }
+                                    placeholder="https://api.gateway-wa.com/instance/send"
+                                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
+                                  />
+                                </div>
+                              ) : (
+                                <div>
+                                  <label className="block text-slate-400 mb-1 font-semibold">
+                                    Meta Phone Number ID + Access Token
+                                  </label>
+                                  <div className="flex gap-2">
+                                    <input
+                                      type="text"
+                                      value={cfgWa.metaPhoneId}
+                                      onChange={(e) =>
+                                        actualizarCfgWa({
+                                          metaPhoneId: e.target.value,
+                                        })
+                                      }
+                                      placeholder="Phone ID"
+                                      className="w-1/2 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 font-mono text-white"
+                                    />
+                                    <input
+                                      type="password"
+                                      value={cfgWa.metaToken}
+                                      onChange={(e) =>
+                                        actualizarCfgWa({
+                                          metaToken: e.target.value,
+                                        })
+                                      }
+                                      placeholder="Bearer Token"
+                                      className="w-1/2 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 font-mono text-white"
+                                    />
+                                  </div>
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <div className="md:col-span-2 flex items-center bg-emerald-950/30 border border-emerald-500/30 rounded-lg p-3 text-emerald-200 text-xs">
+                              <span>
+                                ✔ Con la <strong>Opción 1 (Vinculación Directa)</strong> activa para{" "}
+                                <strong>{comercioSel.nombre}</strong>, el comercio no requiere configurar tokens ni escanear nada: cada vez que el cajero emita una jugada, el comprobante oficial saldrá directo al WhatsApp del cliente.
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Acciones de Sincronización, QR de Vinculación y Prueba en Vivo */}
+                        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800">
+                          <div className="text-xs font-mono text-emerald-400 flex items-center gap-1.5">
+                            <ShieldCheck className="w-4 h-4" />
+                            Estado para {comercioSel.nombre}:{" "}
+                            <strong>{cfgWa.ultimaSincronizacion}</strong>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2">
+                            {cfgWa.modoVinculacion === "API_CLOUD_GATEWAY" && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setMostrandoQrSuperAdmin((prev) => !prev)
+                                }
+                                className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-300 border border-sky-500/40 text-xs font-bold flex items-center gap-1.5"
+                              >
+                                <QrCode className="w-4 h-4" />
+                                {mostrandoQrSuperAdmin
+                                  ? "Ocultar QR de Vinculación"
+                                  : "Generar QR para Vincular WhatsApp del Comercio"}
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                actualizarCfgWa({
+                                  qrVinculado: true,
+                                  ultimaSincronizacion: `Sincronizado por SuperAdmin (${new Date().toLocaleTimeString(
+                                    "es-VE"
+                                  )})`,
+                                });
+                                setAlertaSistema({
+                                  tipo: "exito",
+                                  mensaje: `WhatsApp sincronizado exitosamente para "${
+                                    comercioSel.nombre
+                                  }" en modo ${
+                                    cfgWa.modoVinculacion ===
+                                    "API_CLOUD_GATEWAY"
+                                      ? "Opción 2 (Automático Silencioso API/QR)"
+                                      : "Opción 1 (Vinculación Directa 1-Clic)"
+                                  }. El comercio ya puede vender sin configurar nada.`,
+                                });
+                              }}
+                              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 shadow"
+                            >
+                              <CheckCircle2 className="w-4 h-4" />
+                              Guardar y Dejar Listo para el Comercio
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                abrirWhatsAppClienteDirecto({
+                                  comercioNombre: comercioSel.nombre,
+                                  comercioRif: comercioSel.rif,
+                                  cajeroNombre:
+                                    "SuperAdmin (Prueba de Sincronización)",
+                                  serialCorto: "0009999",
+                                  fechaHoraEmision: new Date().toLocaleString(
+                                    "es-VE"
+                                  ),
+                                  tasaBcv,
+                                  totalUsd: 1.0,
+                                  totalBs: tasaBcv,
+                                  codigoSeguridadHmac:
+                                    "ABCD1234EFGH5678ABCD1234EFGH5678",
+                                  qrPayload: `BANCAPRO|${comercioSel.id}|TEST|1.00`,
+                                  clienteTelefono: cfgWa.telefonoComercio,
+                                  items: [
+                                    {
+                                      sorteoHora: "10:00 AM",
+                                      codigoAnimal: "05",
+                                      nombreAnimal: "León",
+                                      montoUsd: 1.0,
+                                      premioPotencialUsd: 30.0,
+                                    },
+                                  ],
+                                });
+                              }}
+                              className="px-3.5 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold flex items-center gap-1.5"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              Enviar Ticket de Prueba al Comercio
+                            </button>
+                          </div>
+                        </div>
+
+                        {mostrandoQrSuperAdmin &&
+                          cfgWa.modoVinculacion === "API_CLOUD_GATEWAY" && (
+                            <div className="p-4 rounded-xl bg-slate-900 border border-sky-500/40 flex flex-col sm:flex-row items-center gap-5">
+                              <div className="bg-white p-3 rounded-xl shrink-0">
+                                {/* Representación visual limpia de QR de Instancia para emparejar desde el Portal SuperAdmin */}
+                                <div className="w-28 h-28 grid grid-cols-7 grid-rows-7 gap-0.5 bg-white">
+                                  {Array.from({ length: 49 }).map((_, idx) => (
+                                    <div
+                                      key={idx}
+                                      className={
+                                        idx % 2 === 0 ||
+                                        idx % 5 === 0 ||
+                                        idx < 7
+                                          ? "bg-slate-950"
+                                          : "bg-white"
+                                      }
+                                    />
+                                  ))}
+                                </div>
+                              </div>
+                              <div className="space-y-1.5 text-xs">
+                                <div className="font-bold text-sky-300 text-sm">
+                                  Código QR de Emparejamiento Centralizado —{" "}
+                                  {comercioSel.nombre} ({cfgWa.instanciaId})
+                                </div>
+                                <p className="text-slate-300 leading-relaxed">
+                                  Escanee este código desde el WhatsApp que usará el comercio (
+                                  <span className="font-mono text-white">
+                                    Dispositivos vinculados → Vincular un dispositivo
+                                  </span>
+                                  ). Una vez vinculado aquí en su Portal SuperAdmin, la sesión queda guardada en el servidor y el cajero del comercio no tendrá que iniciar sesión ni abrir WhatsApp en la taquilla.
+                                </p>
+                              </div>
+                            </div>
+                          )}
+                      </div>
+                    </div>
+
+                    {/* PANEL 2: REPORTE SEMANAL DETALLADO DESCARGABLE POR COMERCIO */}
+                    <div className="bg-slate-900 border border-purple-500/40 rounded-2xl p-6 space-y-5 shadow-xl">
+                      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
+                        <div className="flex items-center gap-3">
+                          <div className="p-2.5 rounded-xl bg-purple-500/15 border border-purple-500/40 text-purple-400">
+                            <FileSpreadsheet className="w-6 h-6" />
+                          </div>
+                          <div>
+                            <h3 className="text-base font-black text-white">
+                              Reporte Semanal Detallado de Ventas por Comercio —{" "}
+                              <span className="text-purple-300">
+                                {comercioSel.nombre}
+                              </span>
+                            </h3>
+                            <p className="text-xs text-slate-400">
+                              Auditoría completa de todo lo vendido por este comercio en la semana (desglosado por cajero, sorteo, animalito, monto en Bs./USD y premios).
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              descargarReporteSemanalCsv(comercioSel.id)
+                            }
+                            className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-2 shadow-lg transition"
+                          >
+                            <FileSpreadsheet className="w-4 h-4" />
+                            Descargar Reporte Semanal (Excel / .CSV)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              imprimirReporteSemanalEjecutivo(comercioSel.id)
+                            }
+                            className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs flex items-center gap-2 shadow-lg transition"
+                          >
+                            <Download className="w-4 h-4" />
+                            Descargar / Imprimir Reporte en PDF
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* KPIs Semanales del Comercio Seleccionado */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+                        <div className="bg-slate-950 border border-slate-800 rounded-xl p-4">
+                          <div className="text-[10px] font-mono uppercase text-slate-400">
+                            Tickets Emitidos en la Semana
+                          </div>
+                          <div className="text-lg font-black font-mono text-white mt-1">
+                            {ticketsSemanaValidos.length} tickets
+                          </div>
+                          <div className="text-[11px] text-slate-500 mt-0.5">
+                            Comercio: {comercioSel.rif}
+                          </div>
+                        </div>
+
+                        <div className="bg-slate-950 border border-emerald-500/30 rounded-xl p-4">
+                          <div className="text-[10px] font-mono uppercase text-emerald-400">
+                            Total Ventas Semana (Bs. / USD)
+                          </div>
+                          <div className="text-lg font-black font-mono text-emerald-300 mt-1">
+                            Bs. {ventasSemanaBs.toFixed(2)}
+                          </div>
+                          <div className="text-xs font-mono text-slate-400 mt-0.5">
+                            Equivalente: ${ventasSemanaUsd.toFixed(2)} USD
+                          </div>
+                        </div>
+
+                        <div className="bg-slate-950 border border-amber-500/30 rounded-xl p-4">
+                          <div className="text-[10px] font-mono uppercase text-amber-400">
+                            Premios de la Semana (30x)
+                          </div>
+                          <div className="text-lg font-black font-mono text-amber-300 mt-1">
+                            Bs. {premiosSemanaBs.toFixed(2)}
+                          </div>
+                          <div className="text-xs font-mono text-slate-400 mt-0.5">
+                            Equivalente: ${premiosSemanaUsd.toFixed(2)} USD
+                          </div>
+                        </div>
+
+                        <div className="bg-slate-950 border border-sky-500/30 rounded-xl p-4">
+                          <div className="text-[10px] font-mono uppercase text-sky-400">
+                            Balance / Utilidad Neta Semanal
+                          </div>
+                          <div
+                            className={`text-lg font-black font-mono mt-1 ${
+                              netoSemanaBs >= 0
+                                ? "text-sky-300"
+                                : "text-rose-400"
+                            }`}
+                          >
+                            Bs. {netoSemanaBs.toFixed(2)}
+                          </div>
+                          <div className="text-xs font-mono text-slate-400 mt-0.5">
+                            Equivalente: ${netoSemanaUsd.toFixed(2)} USD
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Resumen Semanal por Cajero del Comercio */}
+                      <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-2">
+                        <div className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                          <Users className="w-4 h-4 text-emerald-400" />
+                          Rendimiento Semanal por Cajero en Caja ({comercioSel.nombre}):
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                          {Object.entries(ventasPorCajeroSemana).map(
+                            ([nombreCaj, info]) => (
+                              <div
+                                key={nombreCaj}
+                                className="bg-slate-900 border border-slate-800 rounded-lg p-3 flex items-center justify-between text-xs"
+                              >
+                                <div>
+                                  <div className="font-bold text-white">
+                                    {nombreCaj}
+                                  </div>
+                                  <div className="text-[11px] text-slate-400">
+                                    {info.tickets} tickets vendidos
+                                  </div>
+                                </div>
+                                <div className="text-right font-mono">
+                                  <div className="font-bold text-emerald-400">
+                                    Bs. {info.bs.toFixed(2)}
+                                  </div>
+                                  <div className="text-[11px] text-slate-400">
+                                    ${info.usd.toFixed(2)} USD
+                                  </div>
+                                </div>
+                              </div>
+                            )
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Tabla Detallada de Ventas de la Semana */}
+                      <div className="overflow-x-auto rounded-xl border border-slate-800">
+                        <table className="w-full text-left border-collapse text-xs">
+                          <thead>
+                            <tr className="bg-slate-950 text-slate-400 font-mono text-[11px] uppercase border-b border-slate-800">
+                              <th className="py-2.5 px-3">Fecha / Hora</th>
+                              <th className="py-2.5 px-3">Ticket / PIN</th>
+                              <th className="py-2.5 px-3">Cajero en Caja</th>
+                              <th className="py-2.5 px-3">WhatsApp Cliente</th>
+                              <th className="py-2.5 px-3">
+                                Jugadas Detalladas (Sorteo • Animalito • Monto)
+                              </th>
+                              <th className="py-2.5 px-3">Total Jugado</th>
+                              <th className="py-2.5 px-3">Estado</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/70 bg-slate-900/60">
+                            {ticketsComercioSemana.map((tk) => (
+                              <tr
+                                key={tk.ticketId}
+                                className="hover:bg-slate-800/40"
+                              >
+                                <td className="py-2.5 px-3 font-mono text-slate-300">
+                                  {tk.fechaHora}
+                                </td>
+                                <td className="py-2.5 px-3 font-mono">
+                                  <div className="font-bold text-white">
+                                    #{tk.serialCorto}
+                                  </div>
+                                  <div className="text-[10px] text-emerald-400">
+                                    {tk.pinReclamo}
+                                  </div>
+                                </td>
+                                <td className="py-2.5 px-3 font-semibold text-sky-300">
+                                  {tk.cajeroNombre ||
+                                    "Magaly Rodríguez (Encargada)"}
+                                </td>
+                                <td className="py-2.5 px-3 font-mono text-slate-300">
+                                  {tk.clienteTelefono}
+                                </td>
+                                <td className="py-2.5 px-3">
+                                  <div className="space-y-1">
+                                    {tk.items.map((it, i) => (
+                                      <div
+                                        key={i}
+                                        className="text-[11px] font-mono text-slate-200"
+                                      >
+                                        <span className="text-amber-300">
+                                          {it.sorteoHora}
+                                        </span>{" "}
+                                        • #{it.codigoAnimal} {it.nombreAnimal} ➡️{" "}
+                                        <strong className="text-emerald-300">
+                                          Bs.{" "}
+                                          {(it.montoUsd * tk.tasaBcv).toFixed(
+                                            2
+                                          )}
+                                        </strong>{" "}
+                                        (${it.montoUsd.toFixed(2)})
+                                      </div>
+                                    ))}
+                                  </div>
+                                </td>
+                                <td className="py-2.5 px-3 font-mono">
+                                  <div className="font-bold text-emerald-400">
+                                    Bs. {tk.totalBs.toFixed(2)}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400">
+                                    ${tk.totalUsd.toFixed(2)} USD
+                                  </div>
+                                </td>
+                                <td className="py-2.5 px-3">
+                                  <span
+                                    className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase ${
+                                      tk.estado === "GANADOR"
+                                        ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                                        : tk.estado === "PAGADO"
+                                        ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                                        : tk.estado === "ANULADO"
+                                        ? "bg-red-500/20 text-red-300"
+                                        : "bg-slate-800 text-slate-300"
+                                    }`}
+                                  >
+                                    {tk.estado}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           )}
         </main>
@@ -1552,7 +2865,7 @@ export default function TaquillaPosSystem() {
                   BancaPro Core
                 </h1>
                 <span className="text-[11px] font-mono uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                  WhatsApp Ticket • RLS Multi-Tenant
+                  WhatsApp Sincronizado • RLS Multi-Tenant
                 </span>
               </div>
               <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 mt-0.5">
@@ -1597,6 +2910,55 @@ export default function TaquillaPosSystem() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
+            {/* SELECTOR DE QUIÉN TRABAJA EN LA CAJA (CAJERO / OPERADOR EN TURNO) */}
+            <div className="flex items-center gap-2 bg-slate-950 border border-emerald-500/40 rounded-lg px-3 py-1.5">
+              <UserCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-slate-400 flex items-center justify-between gap-2">
+                  <span>Quién Trabaja en Caja</span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setMostrandoFormNuevoCajero((prev) => !prev)
+                    }
+                    className="text-[10px] font-mono text-emerald-400 hover:text-emerald-300 underline"
+                  >
+                    {mostrandoFormNuevoCajero ? "Cerrar" : "+ Agregar Cajero"}
+                  </button>
+                </div>
+                <select
+                  aria-label="Seleccionar quién trabajará en la caja"
+                  value={cajeroActivoActual?.id || ""}
+                  onChange={(e) => {
+                    const nuevoId = e.target.value;
+                    setCajeroSeleccionadoPorTenant((prev) => ({
+                      ...prev,
+                      [tenantActual.id]: nuevoId,
+                    }));
+                    const cajeroObj = cajerosDelComercioActual.find(
+                      (c) => c.id === nuevoId
+                    );
+                    if (cajeroObj) {
+                      setAlertaSistema({
+                        tipo: "info",
+                        mensaje: `Turno de caja asignado a: ${cajeroObj.nombre} (${cajeroObj.turno}). Todos los tickets registrarán este cajero.`,
+                      });
+                    }
+                  }}
+                  className="bg-transparent font-mono text-xs font-bold text-emerald-300 focus:outline-none cursor-pointer pr-2"
+                >
+                  {cajerosDelComercioActual.map((caj) => (
+                    <option
+                      key={caj.id}
+                      value={caj.id}
+                      className="bg-slate-900 text-white"
+                    >
+                      {caj.nombre} • {caj.turno}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
             {/* Contador Regresivo de Sorteo (T - 3m) */}
             <div className="flex items-center gap-2.5 bg-slate-950 border border-amber-500/30 rounded-lg px-3 py-1.5">
               <Clock className="w-4 h-4 text-amber-400 animate-pulse" />
@@ -1692,6 +3054,76 @@ export default function TaquillaPosSystem() {
             </nav>
           </div>
         </div>
+
+        {/* FORMULARIO RÁPIDO PARA AGREGAR NUEVO CAJERO AL TURNO DE CAJA DEL COMERCIO */}
+        {mostrandoFormNuevoCajero && (
+          <div className="max-w-7xl mx-auto mt-3 pt-3 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3">
+            <div className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
+              <Users className="w-4 h-4 text-emerald-400" />
+              <span>
+                Registrar Nuevo Cajero / Operador en Caja para{" "}
+                {tenantActual.nombre}:
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="text"
+                value={nuevoCajeroNombreInput}
+                onChange={(e) => setNuevoCajeroNombreInput(e.target.value)}
+                placeholder="Nombre y Apellido (ej. María Rojas)"
+                className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white w-56"
+              />
+              <input
+                type="text"
+                value={nuevoCajeroTurnoInput}
+                onChange={(e) => setNuevoCajeroTurnoInput(e.target.value)}
+                placeholder="Turno (ej. Mañana / Tarde)"
+                className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white w-44"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const nom = nuevoCajeroNombreInput.trim();
+                  if (!nom) return;
+                  const nuevoId = `caj-${Date.now()}`;
+                  const nuevoCaj: CajeroComercio = {
+                    id: nuevoId,
+                    nombre: nom,
+                    turno: nuevoCajeroTurnoInput.trim() || "Turno General",
+                    activo: true,
+                  };
+                  setCajerosPorTenant((prev) => ({
+                    ...prev,
+                    [tenantActual.id]: [
+                      ...(prev[tenantActual.id] ?? []),
+                      nuevoCaj,
+                    ],
+                  }));
+                  setCajeroSeleccionadoPorTenant((prev) => ({
+                    ...prev,
+                    [tenantActual.id]: nuevoId,
+                  }));
+                  setNuevoCajeroNombreInput("");
+                  setMostrandoFormNuevoCajero(false);
+                  setAlertaSistema({
+                    tipo: "exito",
+                    mensaje: `Cajero "${nuevoCaj.nombre}" agregado y asignado como operador actual en la caja.`,
+                  });
+                }}
+                className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs"
+              >
+                Guardar y Asignar a Caja
+              </button>
+              <button
+                type="button"
+                onClick={() => setMostrandoFormNuevoCajero(false)}
+                className="px-2.5 py-1.5 rounded-lg bg-slate-800 text-slate-300 text-xs"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
       </header>
 
       {/* BANNER DE FEEDBACK TRANSACCIONAL */}
@@ -2291,6 +3723,10 @@ export default function TaquillaPosSystem() {
                             Bs. {tk.totalBs.toFixed(2)} ($
                             {tk.totalUsd.toFixed(2)})
                           </span>
+                        </div>
+                        <div className="text-[10px] font-mono text-emerald-400/90">
+                          👤 En Caja:{" "}
+                          {tk.cajeroNombre || "Magaly Rodríguez (Encargada)"}
                         </div>
                         <div className="flex items-center justify-between pt-1 border-t border-slate-900">
                           <button

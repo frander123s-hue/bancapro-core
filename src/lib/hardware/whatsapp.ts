@@ -97,6 +97,7 @@ export function construirMensajeWhatsAppTicket(
     `━━━━━━━━━━━━━━━━━━━━`,
     `📌 *TICKET N°:* #${ticket.serialCorto}`,
     `🕒 *EMISIÓN:* ${ticket.fechaHoraEmision}`,
+    ticket.cajeroNombre ? `👤 *CAJERO EN CAJA:* ${ticket.cajeroNombre}` : "",
     `📱 *CLIENTE:* +${normalizarTelefonoVenezuela(ticket.clienteTelefono)}`,
     `💱 *TASA BCV:* Bs. ${ticket.tasaBcv.toFixed(2)} / USD`,
     `━━━━━━━━━━━━━━━━━━━━`,
