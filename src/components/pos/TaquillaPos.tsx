@@ -13,7 +13,14 @@ import {
   pagarTicketGanador,
   anularTicket,
   liquidarSorteo,
+  obtenerTasaBcvActual,
 } from "@/lib/actions/transacciones";
+import {
+  iniciarSesion,
+  iniciarSesionMagaly,
+  cerrarSesion,
+  obtenerContextoActual,
+} from "@/lib/actions/auth";
 import {
   imprimirTicketTermico,
   type DatosTicketTermico,
@@ -129,6 +136,101 @@ export default function TaquillaPosSystem() {
   const [tenantActualId, setTenantActualId] = useState<string>(
     "11111111-1111-4111-8111-111111111111"
   );
+
+  // Sesión GoTrue Activa
+  const [usuarioSesion, setUsuarioSesion] = useState<{
+    id: string;
+    email: string;
+    nombre: string;
+    rol: string;
+    tenantId: string;
+  } | null>(null);
+  const [cargandoAuth, setCargandoAuth] = useState<boolean>(true);
+
+  // Inicialización de sesión GoTrue
+  useEffect(() => {
+    let activo = true;
+    async function cargarSesion() {
+      try {
+        const ctx = await obtenerContextoActual();
+        if (ctx && activo) {
+          setUsuarioSesion({
+            id: ctx.userId,
+            email: ctx.email,
+            nombre: ctx.nombreUsuario,
+            rol: ctx.rol,
+            tenantId: ctx.tenantId,
+          });
+          setTenantActualId(ctx.tenantId);
+          return;
+        }
+
+        // Si no hay cookies de sesión, auto-login de Magaly Rodríguez (Tenant #1)
+        const loginMagaly = await iniciarSesionMagaly();
+        if (loginMagaly.ok && loginMagaly.user && activo) {
+          setUsuarioSesion({
+            id: loginMagaly.user.id,
+            email: loginMagaly.user.email,
+            nombre: loginMagaly.user.nombre || "Magaly Rodríguez",
+            rol: loginMagaly.user.rol || "admin_comercio",
+            tenantId:
+              loginMagaly.user.tenantId ||
+              "11111111-1111-4111-8111-111111111111",
+          });
+          if (loginMagaly.user.tenantId) {
+            setTenantActualId(loginMagaly.user.tenantId);
+          }
+        }
+      } catch (err) {
+        console.warn("Fallo al inicializar sesión GoTrue:", err);
+      } finally {
+        if (activo) setCargandoAuth(false);
+      }
+    }
+    cargarSesion();
+    return () => {
+      activo = false;
+    };
+  }, []);
+
+  const ejecutarLoginMagaly = async () => {
+    setCargandoAuth(true);
+    const resp = await iniciarSesionMagaly();
+    if (resp.ok && resp.user) {
+      setUsuarioSesion({
+        id: resp.user.id,
+        email: resp.user.email,
+        nombre: resp.user.nombre || "Magaly Rodríguez",
+        rol: resp.user.rol || "admin_comercio",
+        tenantId:
+          resp.user.tenantId || "11111111-1111-4111-8111-111111111111",
+      });
+      if (resp.user.tenantId) {
+        setTenantActualId(resp.user.tenantId);
+      }
+      setAlertaSistema({
+        tipo: "exito",
+        mensaje: `Sesión GoTrue iniciada como ${resp.user.nombre} (${resp.user.rol})`,
+      });
+    } else {
+      setAlertaSistema({
+        tipo: "error",
+        mensaje: `Error al autenticar: ${resp.error}`,
+      });
+    }
+    setCargandoAuth(false);
+  };
+
+  const ejecutarCerrarSesion = async () => {
+    setCargandoAuth(true);
+    await cerrarSesion();
+    setUsuarioSesion(null);
+    setCargandoAuth(false);
+    setAlertaSistema({
+      tipo: "info",
+      mensaje: "Sesión GoTrue cerrada correctamente.",
+    });
+  };
 
   const tenantActual = useMemo(
     () => tenants.find((t) => t.id === tenantActualId) ?? tenants[0],
@@ -258,10 +360,16 @@ export default function TaquillaPosSystem() {
 
   // Estado de horarios respecto a la regla estricta T - 3 minutos
   const estadoHorarios = useMemo(() => {
-    const hActual = ahora.getHours();
-    const mActual = ahora.getMinutes();
-    const sActual = ahora.getSeconds();
-    const segsDiaActual = hActual * 3600 + mActual * 60 + sActual;
+    // Sincronización estricta con la hora oficial de Venezuela (America/Caracas, UTC-4)
+    const caracasTimeStr = ahora.toLocaleTimeString("en-GB", {
+      timeZone: "America/Caracas",
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    const [hActual, mActual, sActual] = caracasTimeStr.split(":").map(Number);
+    const segsDiaActual = (hActual || 0) * 3600 + (mActual || 0) * 60 + (sActual || 0);
 
     return HORARIOS_OFICIALES_LOTTO_ACTIVO.map((h) => {
       const [hh, mm] = h.hora24.split(":").map(Number);
@@ -434,57 +542,37 @@ export default function TaquillaPosSystem() {
         modoEntrega
       );
 
-      // Actualizar el estado atómico de cupos del comercio actual
+      // Verificación estricta de backend: si la transacción falló, abortar de inmediato sin generar ticket falso
+      if (!respuestaRpc.ok || !respuestaRpc.ticket) {
+        setAlertaSistema({
+          tipo: "error",
+          mensaje: `TRANSACCIÓN RECHAZADA POR EL SERVIDOR: ${
+            respuestaRpc.error || "Fallo en la emisión del ticket."
+          }`,
+        });
+        setProcesandoVenta(false);
+        return;
+      }
+
+      // Ticket confirmado genuino proveniente de Supabase
+      const ticketConfirmado = respuestaRpc.ticket;
+      const ticketIdFinal = ticketConfirmado.ticket_id;
+      const serialCortoFinal = String(ticketConfirmado.serial_corto).padStart(7, "0");
+      const codigoSeguridadFinal = ticketConfirmado.codigo_seguridad;
+      const qrPayloadFinal = ticketConfirmado.qr_payload;
+      const pinReclamoCorto = `${serialCortoFinal}-${codigoSeguridadFinal
+        .slice(0, 8)
+        .toUpperCase()}`;
+
+      // Actualizar el estado de cupos acumulados del comercio únicamente tras confirmación real del servidor
       const nuevosCupos = { ...cuposAcumulados };
       for (const item of carrito) {
         const k = `${tenantActual.id}_${item.sorteoId}_${item.figura.dbNumber}`;
-        if (
-          (nuevosCupos[k] ?? 0) + item.montoUsd >
-          tenantActual.cupoAnimalUsd
-        ) {
-          setAlertaSistema({
-            tipo: "error",
-            mensaje: `ROLLBACK TRANSACCIONAL: Cupo agotado para esta figura (${item.figura.codigo} - ${item.figura.nombre}).`,
-          });
-          setProcesandoVenta(false);
-          return;
-        }
         nuevosCupos[k] = Number(
           ((nuevosCupos[k] ?? 0) + item.montoUsd).toFixed(2)
         );
       }
       setCuposAcumulados(nuevosCupos);
-
-      const ticketIdFinal =
-        respuestaRpc.ticket?.ticket_id ?? crypto.randomUUID();
-      const serialCortoFinal = String(
-        respuestaRpc.ticket?.serial_corto ??
-          Math.floor(1042 + Math.random() * 8900)
-      ).padStart(7, "0");
-      const epochSegs = Math.floor(Date.now() / 1000);
-
-      const encoder = new TextEncoder();
-      const dataBuffer = encoder.encode(
-        `${tenantActual.id}|${ticketIdFinal}|${totalCarritoUsd.toFixed(
-          2
-        )}|${epochSegs}`
-      );
-      const hashBuffer = await crypto.subtle.digest("SHA-256", dataBuffer);
-      const hashHexLocal = Array.from(new Uint8Array(hashBuffer))
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
-
-      const codigoSeguridadFinal =
-        respuestaRpc.ticket?.codigo_seguridad ?? hashHexLocal;
-      const pinReclamoCorto = `${serialCortoFinal}-${codigoSeguridadFinal
-        .slice(0, 8)
-        .toUpperCase()}`;
-
-      const qrPayloadFinal =
-        respuestaRpc.ticket?.qr_payload ??
-        `BANCAPRO|${tenantActual.id}|${ticketIdFinal}|${totalCarritoUsd.toFixed(
-          2
-        )}|${epochSegs}|${codigoSeguridadFinal}`;
 
       const fechaStr = new Intl.DateTimeFormat("es-VE", {
         dateStyle: "short",
@@ -603,16 +691,35 @@ export default function TaquillaPosSystem() {
   const sincronizarTasaBcvAhora = async () => {
     setSincronizandoBcv(true);
     try {
-      const res = await fetch("/api/cron/bcv");
-      const json = await res.json();
-      if (json?.tasa_vigente?.tasa) {
-        setTasaBcv(Number(json.tasa_vigente.tasa));
+      // 1. Obtener tasa oficial vigente mediante Server Action pública
+      const tasaVigente = await obtenerTasaBcvActual();
+      if (tasaVigente && tasaVigente > 0) {
+        setTasaBcv(tasaVigente);
         setAlertaSistema({
           tipo: "info",
-          mensaje: `Tasa Oficial BCV sincronizada: Bs. ${Number(
-            json.tasa_vigente.tasa
-          ).toFixed(4)} / USD`,
+          mensaje: `Tasa Oficial BCV sincronizada: Bs. ${tasaVigente.toFixed(
+            4
+          )} / USD`,
         });
+        return;
+      }
+
+      // 2. Fallback de contingencia a endpoint de cron con clave de autorización
+      const cronKey =
+        process.env.NEXT_PUBLIC_CRON_SECRET ||
+        "bancapro_cron_job_auth_secret_2026";
+      const res = await fetch(`/api/cron/bcv?key=${cronKey}`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json?.tasa_vigente?.tasa) {
+          setTasaBcv(Number(json.tasa_vigente.tasa));
+          setAlertaSistema({
+            tipo: "info",
+            mensaje: `Tasa Oficial BCV sincronizada: Bs. ${Number(
+              json.tasa_vigente.tasa
+            ).toFixed(4)} / USD`,
+          });
+        }
       }
     } catch {
       // Mantiene tasa actual
@@ -633,7 +740,14 @@ export default function TaquillaPosSystem() {
       return;
     }
 
-    await anularTicket(ticket.ticketId);
+    const resp = await anularTicket(ticket.ticketId);
+    if (!resp.ok) {
+      setAlertaSistema({
+        tipo: "error",
+        mensaje: `RECHAZO EN ANULACIÓN: ${resp.error || "Fallo al anular ticket en el servidor."}`,
+      });
+      return;
+    }
 
     const nuevosCupos = { ...cuposAcumulados };
     for (const item of ticket.items) {
@@ -694,7 +808,14 @@ export default function TaquillaPosSystem() {
     if (!ticketVerificadoCobro || ticketVerificadoCobro.estado !== "GANADOR")
       return;
 
-    await pagarTicketGanador(ticketVerificadoCobro.qrPayload);
+    const resp = await pagarTicketGanador(ticketVerificadoCobro.qrPayload);
+    if (!resp.ok) {
+      setAlertaSistema({
+        tipo: "error",
+        mensaje: `RECHAZO EN PAGO: ${resp.error || "Fallo al procesar pago en el servidor."}`,
+      });
+      return;
+    }
 
     const actualizado: TicketHistoricoLocal = {
       ...ticketVerificadoCobro,
@@ -724,11 +845,19 @@ export default function TaquillaPosSystem() {
     const figuraGanadora = resolverFiguraPorInput(animalGanadorManual);
     if (!figuraGanadora) return;
 
-    await liquidarSorteo(
+    const resp = await liquidarSorteo(
       sorteoLiquidarId,
       figuraGanadora.dbNumber,
       "MANUAL_CONTINGENCIA"
     );
+
+    if (!resp.ok) {
+      setAlertaSistema({
+        tipo: "error",
+        mensaje: `RECHAZO EN LIQUIDACIÓN: ${resp.error || "Fallo al liquidar sorteo."}`,
+      });
+      return;
+    }
 
     const horaLiq = new Intl.DateTimeFormat("es-VE", {
       timeStyle: "medium",
@@ -840,6 +969,36 @@ export default function TaquillaPosSystem() {
                     </option>
                   ))}
                 </select>
+                <div className="flex items-center gap-1.5 ml-2">
+                  {usuarioSesion ? (
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        title={`Conectado a GoTrue como ${usuarioSesion.email}`}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+                      >
+                        <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                        {usuarioSesion.nombre} ({usuarioSesion.rol})
+                      </span>
+                      <button
+                        onClick={ejecutarCerrarSesion}
+                        disabled={cargandoAuth}
+                        title="Cerrar sesión GoTrue"
+                        className="text-[10px] text-slate-400 hover:text-rose-400 transition underline"
+                      >
+                        Salir
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={ejecutarLoginMagaly}
+                      disabled={cargandoAuth}
+                      className="px-2 py-0.5 rounded text-[11px] font-medium bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 transition flex items-center gap-1"
+                    >
+                      <Lock className="w-3 h-3" />
+                      {cargandoAuth ? "Autenticando..." : "Conectar GoTrue (Magaly)"}
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </div>

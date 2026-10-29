@@ -1,6 +1,26 @@
-import type { DatosTicketTermico } from "./escpos";
+export interface ItemJugadaWhatsApp {
+  sorteoHora: string;
+  codigoAnimal: string;
+  nombreAnimal: string;
+  montoUsd: number;
+  montoBs?: number;
+  premioPotencialUsd: number;
+}
 
-export interface DatosTicketWhatsApp extends DatosTicketTermico {
+export interface DatosTicketWhatsApp {
+  comercioNombre: string;
+  comercioRif: string;
+  comercioTelefono?: string;
+  cajeroNombre?: string;
+  serialCorto: string | number;
+  fechaHoraEmision: string;
+  tasaBcv: number;
+  totalUsd: number;
+  totalBs: number;
+  codigoSeguridadHmac: string;
+  qrPayload: string;
+  anchoPapel?: "58mm" | "80mm";
+  items: ItemJugadaWhatsApp[];
   clienteTelefono: string;
   urlVerificacionPublica?: string;
 }
@@ -60,7 +80,9 @@ export function construirMensajeWhatsAppTicket(
 
   const baseUrl =
     ticket.urlVerificacionPublica ||
-    (typeof window !== "undefined" ? window.location.origin : "");
+    (typeof window !== "undefined" && window.location?.origin
+      ? window.location.origin
+      : "https://bancapro-core-venezuela.vercel.app");
 
   const linkReclamoDirecto = baseUrl
     ? `${baseUrl}/?ticket=${encodeURIComponent(ticket.qrPayload)}`

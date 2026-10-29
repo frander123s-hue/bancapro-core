@@ -57,6 +57,17 @@ export async function GET(request: NextRequest) {
         day: "2-digit",
       }).format(new Date());
 
+      if (typeof supabase.rpc === "function") {
+        try {
+          await supabase.rpc("actualizar_tasa_bcv", {
+            p_tasa: tasaBcvDetectada,
+            p_fecha: fechaCaracas,
+          });
+        } catch {
+          // Fallback a insert directo
+        }
+      }
+
       await supabase.from("tasas_cambio").insert({
         fuente: "BCV",
         tasa: tasaBcvDetectada,
