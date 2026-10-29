@@ -33,7 +33,10 @@ import {
   construirMensajeWhatsAppTicket,
   abrirWhatsAppClienteDirecto,
   normalizarTelefonoVenezuela,
+  generarImagenTicketConQrDataUrl,
+  copiarImagenTicketConQrAlPortapapeles,
 } from "@/lib/hardware/whatsapp";
+import { generarMatrizQr } from "@/lib/hardware/qr-generator";
 import {
   Printer,
   ShieldCheck,
@@ -3637,19 +3640,105 @@ export default function TaquillaPosSystem() {
                 </button>
               </div>
 
-              {/* Tarjeta del Último Ticket Digital Generado para WhatsApp */}
+              {/* Tarjeta del Último Ticket Digital Generado para WhatsApp y Físico (Con QR Real sin Links) */}
               {ultimoTicketWhatsApp && (
-                <div className="bg-emerald-950/30 border border-emerald-500/40 rounded-xl p-4 space-y-2.5">
+                <div className="bg-emerald-950/30 border border-emerald-500/40 rounded-xl p-4 space-y-3">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
                       <MessageCircle className="w-4 h-4 text-emerald-400" />
-                      Comprobante WhatsApp Listo (#
+                      Ticket Oficial + QR (#
                       {ultimoTicketWhatsApp.serialCorto})
                     </span>
-                    <span className="text-[11px] font-mono bg-emerald-500/20 text-emerald-200 px-2 py-0.5 rounded">
+                    <span className="text-[11px] font-mono bg-emerald-500/20 text-emerald-200 px-2 py-0.5 rounded font-bold">
                       PIN: {ultimoTicketWhatsApp.pinReclamo}
                     </span>
                   </div>
+
+                  {/* Vista Previa del Código QR Criptográfico Generado (Sin Enlaces al POS) */}
+                  <div className="flex items-center gap-3 bg-slate-950/90 border border-slate-800 rounded-xl p-3">
+                    <div className="bg-white p-2 rounded-lg shrink-0 shadow">
+                      {(() => {
+                        const qrMatrix = generarMatrizQr(
+                          ultimoTicketWhatsApp.qrPayload
+                        );
+                        return (
+                          <div
+                            className="grid bg-white"
+                            style={{
+                              gridTemplateColumns: `repeat(${qrMatrix.length}, minmax(0, 1fr))`,
+                              width: "88px",
+                              height: "88px",
+                            }}
+                          >
+                            {qrMatrix.map((row, rIdx) =>
+                              row.map((cell, cIdx) => (
+                                <div
+                                  key={`${rIdx}-${cIdx}`}
+                                  className={cell ? "bg-black" : "bg-white"}
+                                />
+                              ))
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                    <div className="space-y-1 text-[11px]">
+                      <div className="font-bold text-white flex items-center gap-1">
+                        <QrCode className="w-3.5 h-3.5 text-emerald-400" />
+                        QR Criptográfico Inmutable (Cero Links)
+                      </div>
+                      <p className="text-slate-400 leading-snug">
+                        Este QR contiene únicamente el certificado firmado del ticket y el PIN. No incluye ningún enlace web al POS.
+                      </p>
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (!ultimoTicketImpreso) return;
+                            const ok =
+                              await copiarImagenTicketConQrAlPortapapeles({
+                                ...ultimoTicketImpreso,
+                                clienteTelefono:
+                                  ultimoTicketWhatsApp.clienteTelefono,
+                              });
+                            setAlertaSistema({
+                              tipo: ok ? "exito" : "info",
+                              mensaje: ok
+                                ? "Imagen del Ticket con QR copiada al portapapeles. Presione Ctrl+V en el chat de WhatsApp del cliente para pegarla."
+                                : "Use el botón 'Descargar PNG QR' para guardar la imagen del ticket.",
+                            });
+                          }}
+                          className="px-2.5 py-1 rounded bg-sky-600 hover:bg-sky-500 text-white font-bold text-[10px] flex items-center gap-1"
+                        >
+                          <QrCode className="w-3 h-3" />
+                          Copiar Imagen Ticket + QR (Ctrl+V)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!ultimoTicketImpreso) return;
+                            const dataUrl = generarImagenTicketConQrDataUrl({
+                              ...ultimoTicketImpreso,
+                              clienteTelefono:
+                                ultimoTicketWhatsApp.clienteTelefono,
+                            });
+                            if (!dataUrl) return;
+                            const a = document.createElement("a");
+                            a.href = dataUrl;
+                            a.download = `Ticket_${ultimoTicketWhatsApp.serialCorto}_QR.png`;
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                          }}
+                          className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-[10px] flex items-center gap-1"
+                        >
+                          <Download className="w-3 h-3 text-emerald-400" />
+                          Descargar PNG QR
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
                   <pre className="text-[10px] font-mono bg-slate-950/90 border border-slate-800 rounded-lg p-2.5 text-slate-300 whitespace-pre-wrap max-h-40 overflow-y-auto">
                     {ultimoTicketWhatsApp.mensajeWhatsApp}
                   </pre>
@@ -3679,13 +3768,13 @@ export default function TaquillaPosSystem() {
                         setAlertaSistema({
                           tipo: "info",
                           mensaje:
-                            "Comprobante de WhatsApp copiado al portapapeles.",
+                            "Texto del comprobante de WhatsApp copiado al portapapeles.",
                         });
                       }}
                       className="py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs flex items-center gap-1"
                     >
                       <Copy className="w-3.5 h-3.5" />
-                      Copiar
+                      Copiar Texto
                     </button>
                   </div>
                 </div>
@@ -4101,6 +4190,74 @@ export default function TaquillaPosSystem() {
           </div>
         )}
       </main>
+
+      {/* PLANTILLA FÍSICA DE IMPRESIÓN TÉRMICA 58MM/80MM CON CÓDIGO QR REAL (CERO LINKS) */}
+      {ultimoTicketImpreso && (
+        <div className="hidden print:block bg-white text-black p-4 font-mono text-xs max-w-[300px] mx-auto">
+          <div className="text-center font-bold text-sm">
+            {ultimoTicketImpreso.comercioNombre.toUpperCase()}
+          </div>
+          <div className="text-center text-[11px] mb-2">
+            RIF: {ultimoTicketImpreso.comercioRif} • LOTTO ACTIVO
+          </div>
+          <div className="border-t border-dashed border-black my-1.5" />
+          <div>TICKET N°: #{ultimoTicketImpreso.serialCorto}</div>
+          <div>EMISIÓN  : {ultimoTicketImpreso.fechaHoraEmision}</div>
+          <div>CAJERO   : {ultimoTicketImpreso.cajeroNombre}</div>
+          <div>TASA BCV : Bs. {ultimoTicketImpreso.tasaBcv.toFixed(2)} / USD</div>
+          <div className="border-t border-dashed border-black my-1.5" />
+          <div className="font-bold mb-1">DETALLE DE JUGADAS:</div>
+          {ultimoTicketImpreso.items.map((it, idx) => (
+            <div key={idx} className="flex justify-between py-0.5">
+              <span>
+                {it.sorteoHora} #{it.codigoAnimal} {it.nombreAnimal}
+              </span>
+              <span className="font-bold">Bs. {it.montoBs.toFixed(2)}</span>
+            </div>
+          ))}
+          <div className="border-t border-dashed border-black my-1.5" />
+          <div className="font-bold text-sm flex justify-between">
+            <span>TOTAL BS:</span>
+            <span>Bs. {ultimoTicketImpreso.totalBs.toFixed(2)}</span>
+          </div>
+          <div className="font-bold flex justify-between">
+            <span>TOTAL USD:</span>
+            <span>${ultimoTicketImpreso.totalUsd.toFixed(2)}</span>
+          </div>
+          <div className="border-t border-dashed border-black my-2" />
+          <div className="text-center font-bold text-xs mb-2">
+            PIN RECLAMO: {ultimoTicketImpreso.serialCorto}-
+            {ultimoTicketImpreso.codigoSeguridadHmac.slice(0, 8).toUpperCase()}
+          </div>
+          <div className="flex justify-center my-2">
+            {(() => {
+              const qrM = generarMatrizQr(ultimoTicketImpreso.qrPayload);
+              return (
+                <div
+                  className="grid bg-white p-1 border border-black"
+                  style={{
+                    gridTemplateColumns: `repeat(${qrM.length}, minmax(0, 1fr))`,
+                    width: "120px",
+                    height: "120px",
+                  }}
+                >
+                  {qrM.map((row, rI) =>
+                    row.map((cell, cI) => (
+                      <div
+                        key={`${rI}-${cI}`}
+                        className={cell ? "bg-black" : "bg-white"}
+                      />
+                    ))
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+          <div className="text-center text-[9px] break-all mt-1">
+            HMAC: {ultimoTicketImpreso.codigoSeguridadHmac}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

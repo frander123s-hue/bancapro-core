@@ -55,6 +55,7 @@ describe("Tier 2 - Boundary 09: WhatsApp Phone Normalization & Receipt Edge Case
     const msg = construirMensajeWhatsAppTicket(ticketWithSpecialChars);
     expect(msg).toContain("BODEGA & INVERSIONES LOS ÁNGELES C.A.");
     expect(msg).toContain("#37 Ballena (00)");
-    expect(msg).toContain("https://bancapro.local/verificar?store=A&B/?ticket=");
+    expect(msg).toContain(ticketWithSpecialChars.qrPayload);
+    expect(msg).not.toContain("https://");
   });
 });

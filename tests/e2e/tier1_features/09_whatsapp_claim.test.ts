@@ -58,11 +58,12 @@ describe("Tier 1 - Feature 09: WhatsApp Ticket Format & Digital Claim Flow", () 
     expect(msg).toContain("*TOTAL BS:* *Bs. 229.25*");
   });
 
-  it("9.4 should embed the public claim link with encoded QR payload in WhatsApp message", () => {
+  it("9.4 should embed the cryptographic QR payload directly without exposing any POS web URL", () => {
     const msg = construirMensajeWhatsAppTicket(dummyTicket);
 
-    expect(msg).toContain("https://bancapro-core-venezuela.vercel.app/?ticket=");
-    expect(msg).toContain(encodeURIComponent(dummyTicket.qrPayload));
+    expect(msg).not.toContain("http://");
+    expect(msg).not.toContain("https://");
+    expect(msg).toContain(dummyTicket.qrPayload);
   });
 
   it("9.5 should generate a valid wa.me URL with normalized phone and encoded message text", () => {
