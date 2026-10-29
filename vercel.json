@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/resultados",
+      "schedule": "*/10 12-23 * * *"
+    },
+    {
+      "path": "/api/cron/bcv",
+      "schedule": "0 */6 * * *"
+    }
+  ]
+}
