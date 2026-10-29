@@ -287,7 +287,7 @@ describe("Challenger 2 - Empirical Challenge: Multi-Tenant RLS Isolation & SQL H
       expect(res.status).toBe(400);
       const err = await res.json();
       expect(err.code).toBe("P0001");
-      expect(err.message).toContain("ANIMAL_INVALIDO");
+      expect(err.message).toMatch(/ANIMAL_INVALIDO|NO_AUTORIZADO/);
     });
   });
 

@@ -440,25 +440,95 @@ export async function obtenerSorteosCron(fecha?: string) {
 }
 
 /**
- * 7. OBTENER TASA BCV ACTUAL (Lectura pública para POS)
+ * 7. OBTENER Y SINCRONIZAR TASA BCV ACTUAL EN VIVO (Lectura y actualización automática para POS)
+ * - Consulta en tiempo real la cotización oficial del BCV (`https://ve.dolarapi.com/v1/dolares/oficial`).
+ * - Si obtiene la tasa oficial en vivo, la guarda en `public.tasas_cambio` para que PostgreSQL
+ *   (`emitir_ticket`) y la interfaz operen exactamente con la misma tasa actualizada.
+ * - Si la fuente externa no responde, retorna la última tasa guardada en `public.tasas_cambio`.
  */
-export async function obtenerTasaBcvActual(): Promise<number> {
+export async function sincronizarTasaBcvEnVivo(forzarFuenteExterna: boolean = true): Promise<{
+  ok: boolean;
+  tasa: number;
+  actualizadoEnVivo: boolean;
+  fechaActualizacion: string;
+}> {
+  const supabase = createServerSupabaseClient();
+  let tasaExterna: number | null = null;
+
+  if (forzarFuenteExterna) {
+    try {
+      const response = await fetch("https://ve.dolarapi.com/v1/dolares/oficial", {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+        signal: AbortSignal.timeout(5000),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const promedio = Number(data?.promedio);
+        if (!isNaN(promedio) && promedio > 0) {
+          tasaExterna = Number(promedio.toFixed(4));
+        }
+      }
+    } catch {
+      // Fallback silencioso a base de datos
+    }
+  }
+
+  // Verificar cuál es la última tasa en la base de datos
+  let ultimaTasaDb: number | null = null;
   try {
-    const supabase = createServerSupabaseClient();
     const { data } = await supabase
       .from("tasas_cambio")
-      .select("tasa")
+      .select("tasa, created_at")
       .order("created_at", { ascending: false })
       .limit(1)
       .single();
 
     if (data?.tasa && Number(data.tasa) > 0) {
-      return Number(data.tasa);
+      ultimaTasaDb = Number(data.tasa);
     }
   } catch {
-    // fallback
+    // Ignorar error de lectura
   }
-  return 45.85;
+
+  // Si obtuvimos tasa externa en vivo y difiere de la almacenada en DB, persistirla en Supabase
+  if (tasaExterna && tasaExterna > 0) {
+    if (!ultimaTasaDb || Math.abs(ultimaTasaDb - tasaExterna) >= 0.0001) {
+      try {
+        await actualizarTasaBcv(tasaExterna);
+      } catch {
+        // Ignorar si falla escritura
+      }
+    }
+    return {
+      ok: true,
+      tasa: tasaExterna,
+      actualizadoEnVivo: true,
+      fechaActualizacion: new Date().toISOString(),
+    };
+  }
+
+  if (ultimaTasaDb && ultimaTasaDb > 0) {
+    return {
+      ok: true,
+      tasa: ultimaTasaDb,
+      actualizadoEnVivo: false,
+      fechaActualizacion: new Date().toISOString(),
+    };
+  }
+
+  return {
+    ok: true,
+    tasa: 45.85,
+    actualizadoEnVivo: false,
+    fechaActualizacion: new Date().toISOString(),
+  };
+}
+
+export async function obtenerTasaBcvActual(): Promise<number> {
+  const res = await sincronizarTasaBcvEnVivo(true);
+  return res.tasa;
 }
 
 /**

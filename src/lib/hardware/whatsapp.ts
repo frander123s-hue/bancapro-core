@@ -68,14 +68,17 @@ export function construirMensajeWhatsAppTicket(
     .toUpperCase()}`;
 
   const lineasJugadas = ticket.items
-    .map(
-      (it) =>
-        `• *${it.sorteoHora}* | *#${it.codigoAnimal} ${
-          it.nombreAnimal
-        }* ➡️ *$${it.montoUsd.toFixed(2)}* _(Premio 30x: $${it.premioPotencialUsd.toFixed(
-          2
-        )})_`
-    )
+    .map((it) => {
+      const montoBs = Number((it.montoUsd * ticket.tasaBcv).toFixed(2));
+      const premioBs = Number((it.premioPotencialUsd * ticket.tasaBcv).toFixed(2));
+      return `• *${it.sorteoHora}* | *#${it.codigoAnimal} ${
+        it.nombreAnimal
+      }* ➡️ *Bs. ${montoBs.toFixed(2)} ($${it.montoUsd.toFixed(
+        2
+      )})* _(Premio 30x: $${it.premioPotencialUsd.toFixed(
+        2
+      )} / Bs. ${premioBs.toFixed(2)})_`;
+    })
     .join("\n");
 
   const baseUrl =

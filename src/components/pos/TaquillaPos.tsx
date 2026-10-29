@@ -13,13 +13,16 @@ import {
   pagarTicketGanador,
   anularTicket,
   liquidarSorteo,
-  obtenerTasaBcvActual,
+  sincronizarTasaBcvEnVivo,
+  actualizarTasaBcv,
 } from "@/lib/actions/transacciones";
 import {
-  iniciarSesion,
   iniciarSesionMagaly,
   cerrarSesion,
   obtenerContextoActual,
+  autenticarPortalSuperAdmin,
+  verificarSesionPortalSuperAdmin,
+  cerrarSesionPortalSuperAdmin,
 } from "@/lib/actions/auth";
 import {
   imprimirTicketTermico,
@@ -32,7 +35,6 @@ import {
 } from "@/lib/hardware/whatsapp";
 import {
   Printer,
-  QrCode,
   ShieldCheck,
   Clock,
   RefreshCw,
@@ -47,11 +49,13 @@ import {
   TrendingUp,
   Award,
   PlusCircle,
-  Users,
   MessageCircle,
   Smartphone,
   Copy,
   Send,
+  KeyRound,
+  LogOut,
+  ArrowLeftRight,
 } from "lucide-react";
 
 interface JugadaCarrito {
@@ -60,6 +64,7 @@ interface JugadaCarrito {
   sorteoEtiqueta: string;
   figura: FiguraAnimalito;
   montoUsd: number;
+  montoBs: number;
 }
 
 interface TicketHistoricoLocal {
@@ -104,9 +109,20 @@ interface TenantComercio {
 }
 
 export default function TaquillaPosSystem() {
+  // Vistas operativas del Comercio vs Portal SuperAdmin Independiente
   const [vistaActiva, setVistaActiva] = useState<
-    "POS" | "COBRO_QR" | "ADMIN_COMERCIO" | "SUPERADMIN"
+    "POS" | "COBRO_QR" | "ADMIN_COMERCIO"
   >("POS");
+  const [enPortalSuperAdmin, setEnPortalSuperAdmin] = useState<boolean>(false);
+  const [superAdminAutenticado, setSuperAdminAutenticado] =
+    useState<boolean>(false);
+  const [superAdminUserInput, setSuperAdminUserInput] = useState<string>("");
+  const [superAdminPassInput, setSuperAdminPassInput] = useState<string>("");
+  const [errorLoginSuperAdmin, setErrorLoginSuperAdmin] = useState<
+    string | null
+  >(null);
+  const [autenticandoSuperAdmin, setAutenticandoSuperAdmin] =
+    useState<boolean>(false);
 
   // Contexto Multi-Tenant (Por defecto Tenant #1: Bodega Piloto Magaly)
   const [tenants, setTenants] = useState<TenantComercio[]>([
@@ -147,115 +163,36 @@ export default function TaquillaPosSystem() {
   } | null>(null);
   const [cargandoAuth, setCargandoAuth] = useState<boolean>(true);
 
-  // Inicialización de sesión GoTrue
-  useEffect(() => {
-    let activo = true;
-    async function cargarSesion() {
-      try {
-        const ctx = await obtenerContextoActual();
-        if (ctx && activo) {
-          setUsuarioSesion({
-            id: ctx.userId,
-            email: ctx.email,
-            nombre: ctx.nombreUsuario,
-            rol: ctx.rol,
-            tenantId: ctx.tenantId,
-          });
-          setTenantActualId(ctx.tenantId);
-          return;
-        }
-
-        // Si no hay cookies de sesión, auto-login de Magaly Rodríguez (Tenant #1)
-        const loginMagaly = await iniciarSesionMagaly();
-        if (loginMagaly.ok && loginMagaly.user && activo) {
-          setUsuarioSesion({
-            id: loginMagaly.user.id,
-            email: loginMagaly.user.email,
-            nombre: loginMagaly.user.nombre || "Magaly Rodríguez",
-            rol: loginMagaly.user.rol || "admin_comercio",
-            tenantId:
-              loginMagaly.user.tenantId ||
-              "11111111-1111-4111-8111-111111111111",
-          });
-          if (loginMagaly.user.tenantId) {
-            setTenantActualId(loginMagaly.user.tenantId);
-          }
-        }
-      } catch (err) {
-        console.warn("Fallo al inicializar sesión GoTrue:", err);
-      } finally {
-        if (activo) setCargandoAuth(false);
-      }
-    }
-    cargarSesion();
-    return () => {
-      activo = false;
-    };
-  }, []);
-
-  const ejecutarLoginMagaly = async () => {
-    setCargandoAuth(true);
-    const resp = await iniciarSesionMagaly();
-    if (resp.ok && resp.user) {
-      setUsuarioSesion({
-        id: resp.user.id,
-        email: resp.user.email,
-        nombre: resp.user.nombre || "Magaly Rodríguez",
-        rol: resp.user.rol || "admin_comercio",
-        tenantId:
-          resp.user.tenantId || "11111111-1111-4111-8111-111111111111",
-      });
-      if (resp.user.tenantId) {
-        setTenantActualId(resp.user.tenantId);
-      }
-      setAlertaSistema({
-        tipo: "exito",
-        mensaje: `Sesión GoTrue iniciada como ${resp.user.nombre} (${resp.user.rol})`,
-      });
-    } else {
-      setAlertaSistema({
-        tipo: "error",
-        mensaje: `Error al autenticar: ${resp.error}`,
-      });
-    }
-    setCargandoAuth(false);
-  };
-
-  const ejecutarCerrarSesion = async () => {
-    setCargandoAuth(true);
-    await cerrarSesion();
-    setUsuarioSesion(null);
-    setCargandoAuth(false);
-    setAlertaSistema({
-      tipo: "info",
-      mensaje: "Sesión GoTrue cerrada correctamente.",
-    });
-  };
-
   const tenantActual = useMemo(
     () => tenants.find((t) => t.id === tenantActualId) ?? tenants[0],
     [tenants, tenantActualId]
   );
 
-  // Tasa Oficial BCV en vivo
+  // Tasa Oficial BCV en vivo (Sincronizada automáticamente al iniciar)
   const [tasaBcv, setTasaBcv] = useState<number>(45.85);
   const [sincronizandoBcv, setSincronizandoBcv] = useState<boolean>(false);
+  const [ultimaHoraSincBcv, setUltimaHoraSincBcv] = useState<string>("Sincronizando...");
+  const [tasaManualSuperAdminInput, setTasaManualSuperAdminInput] =
+    useState<string>("");
 
   // Reloj del servidor y conteo regresivo hacia el cierre (T - 3 minutos)
   const [ahora, setAhora] = useState<Date>(new Date());
-  const [sorteoSeleccionadoId, setSorteoSeleccionadoId] = useState<number>(2); // 10:00 AM por defecto
+  const [sorteoSeleccionadoId, setSorteoSeleccionadoId] = useState<number>(2);
 
-  // Inputs de Taquilla Ultra-Rápida + Canal de Entrega (Por defecto WHATSAPP ya que no hay impresora física aún)
+  // Inputs de Taquilla Ultra-Rápida con Doble Moneda Sincronizada (Bs. ⇄ USD)
+  // La mayoría de los clientes hacen la apuesta mínima en Bolívares (Bs.)
   const [codigoInput, setCodigoInput] = useState<string>("");
-  const [montoInput, setMontoInput] = useState<string>("1.00");
+  const [monedaFoco, setMonedaFoco] = useState<"BS" | "USD">("BS");
+  const [montoBsInput, setMontoBsInput] = useState<string>("20.00");
+  const [montoInput, setMontoInput] = useState<string>("0.44"); // Monto en USD sincronizado
   const [clienteTelefonoInput, setClienteTelefonoInput] =
     useState<string>("0414-1234567");
   const [modoEntrega, setModoEntrega] = useState<
     "WHATSAPP" | "TERMICA_ESCPOS" | "AMBOS"
   >("WHATSAPP");
   const [carrito, setCarrito] = useState<JugadaCarrito[]>([]);
-  const [anchoImpresora, setAnchoImpresora] = useState<"58mm" | "80mm">("58mm");
-  const [usarWebSerial, setUsarWebSerial] = useState<boolean>(false);
+  const [anchoImpresora] = useState<"58mm" | "80mm">("58mm");
+  const [usarWebSerial] = useState<boolean>(false);
 
   // Control de Cupos Acumulados por Tenant + Sorteo + Animal: clave `${tenantId}_${sorteoId}_${dbNumber}`
   const [cuposAcumulados, setCuposAcumulados] = useState<Record<string, number>>({
@@ -343,7 +280,7 @@ export default function TaquillaPosSystem() {
   const [nuevaPerdidaMaxInput, setNuevaPerdidaMaxInput] =
     useState<string>("300");
 
-  // Estado para Pantalla 4: SuperAdmin Creación de Tenant
+  // Estado para Portal SuperAdmin Independiente: Creación de Tenant
   const [nuevoComercioNombre, setNuevoComercioNombre] = useState<string>("");
   const [nuevoComercioRif, setNuevoComercioRif] = useState<string>("");
   const [nuevoComercioEmail, setNuevoComercioEmail] = useState<string>("");
@@ -351,16 +288,212 @@ export default function TaquillaPosSystem() {
     useState<string>("450");
 
   const inputCodigoRef = useRef<HTMLInputElement>(null);
+  const inputMontoBsRef = useRef<HTMLInputElement>(null);
   const inputMontoRef = useRef<HTMLInputElement>(null);
+
+  // Inicialización de sesión GoTrue, verificación de cookie SuperAdmin y Auto-Sincronización BCV
+  useEffect(() => {
+    let activo = true;
+    async function inicializarPlataforma() {
+      // 1. Sincronizar Tasa Oficial BCV inmediatamente al cargar la página
+      try {
+        const resBcv = await sincronizarTasaBcvEnVivo(true);
+        if (resBcv.tasa && resBcv.tasa > 0 && activo) {
+          setTasaBcv(resBcv.tasa);
+          setTasaManualSuperAdminInput(resBcv.tasa.toFixed(2));
+          const horaStr = new Intl.DateTimeFormat("es-VE", {
+            timeZone: "America/Caracas",
+            hour: "2-digit",
+            minute: "2-digit",
+          }).format(new Date());
+          setUltimaHoraSincBcv(
+            resBcv.actualizadoEnVivo
+              ? `BCV en vivo (${horaStr})`
+              : `BD (${horaStr})`
+          );
+          setMontoBsInput((bsPrev) => {
+            const valBs = parseFloat(bsPrev);
+            if (!isNaN(valBs) && valBs > 0) {
+              setMontoInput(Math.max(0.01, valBs / resBcv.tasa).toFixed(2));
+            }
+            return bsPrev;
+          });
+        }
+      } catch {
+        // Ignorar si falla en arranque
+      }
+
+      // 2. Verificar si ya tenía sesión abierta en el Portal SuperAdmin
+      try {
+        const tieneSuperAdmin = await verificarSesionPortalSuperAdmin();
+        if (tieneSuperAdmin && activo) {
+          setSuperAdminAutenticado(true);
+        }
+      } catch {
+        // Ignorar
+      }
+
+      // 3. Cargar sesión GoTrue del comercio
+      try {
+        const ctx = await obtenerContextoActual();
+        if (ctx && activo) {
+          setUsuarioSesion({
+            id: ctx.userId,
+            email: ctx.email,
+            nombre: ctx.nombreUsuario,
+            rol: ctx.rol,
+            tenantId: ctx.tenantId,
+          });
+          setTenantActualId(ctx.tenantId);
+          return;
+        }
+
+        const loginMagaly = await iniciarSesionMagaly();
+        if (loginMagaly.ok && loginMagaly.user && activo) {
+          setUsuarioSesion({
+            id: loginMagaly.user.id,
+            email: loginMagaly.user.email,
+            nombre: loginMagaly.user.nombre || "Magaly Rodríguez",
+            rol: loginMagaly.user.rol || "admin_comercio",
+            tenantId:
+              loginMagaly.user.tenantId ||
+              "11111111-1111-4111-8111-111111111111",
+          });
+          if (loginMagaly.user.tenantId) {
+            setTenantActualId(loginMagaly.user.tenantId);
+          }
+        }
+      } catch (err) {
+        console.warn("Fallo al inicializar sesión GoTrue:", err);
+      } finally {
+        if (activo) setCargandoAuth(false);
+      }
+    }
+    inicializarPlataforma();
+    return () => {
+      activo = false;
+    };
+  }, []);
+
+  // Manejadores de cambio bidireccional de monto (Bs. ⇄ USD)
+  const manejarCambioMontoBs = (nuevoBsStr: string) => {
+    setMonedaFoco("BS");
+    setMontoBsInput(nuevoBsStr);
+    const valBs = parseFloat(nuevoBsStr);
+    if (!isNaN(valBs) && valBs > 0 && tasaBcv > 0) {
+      const equivUsd = valBs / tasaBcv;
+      setMontoInput(equivUsd >= 0.01 ? equivUsd.toFixed(2) : "0.01");
+    } else {
+      setMontoInput("0.00");
+    }
+  };
+
+  const manejarCambioMontoUsd = (nuevoUsdStr: string) => {
+    setMonedaFoco("USD");
+    setMontoInput(nuevoUsdStr);
+    const valUsd = parseFloat(nuevoUsdStr);
+    if (!isNaN(valUsd) && valUsd > 0 && tasaBcv > 0) {
+      setMontoBsInput((valUsd * tasaBcv).toFixed(2));
+    } else {
+      setMontoBsInput("0.00");
+    }
+  };
+
+  const aplicarAtajoBs = (bsFijo: number) => {
+    setMonedaFoco("BS");
+    setMontoBsInput(bsFijo.toFixed(2));
+    if (tasaBcv > 0) {
+      setMontoInput(Math.max(0.01, bsFijo / tasaBcv).toFixed(2));
+    }
+    inputCodigoRef.current?.focus();
+  };
+
+  const aplicarAtajoUsd = (usdFijo: number) => {
+    setMonedaFoco("USD");
+    setMontoInput(usdFijo.toFixed(2));
+    if (tasaBcv > 0) {
+      setMontoBsInput((usdFijo * tasaBcv).toFixed(2));
+    }
+    inputCodigoRef.current?.focus();
+  };
+
+  const ejecutarLoginMagaly = async () => {
+    setCargandoAuth(true);
+    const resp = await iniciarSesionMagaly();
+    if (resp.ok && resp.user) {
+      setUsuarioSesion({
+        id: resp.user.id,
+        email: resp.user.email,
+        nombre: resp.user.nombre || "Magaly Rodríguez",
+        rol: resp.user.rol || "admin_comercio",
+        tenantId:
+          resp.user.tenantId || "11111111-1111-4111-8111-111111111111",
+      });
+      if (resp.user.tenantId) {
+        setTenantActualId(resp.user.tenantId);
+      }
+      setAlertaSistema({
+        tipo: "exito",
+        mensaje: `Sesión GoTrue iniciada como ${resp.user.nombre} (${resp.user.rol})`,
+      });
+    } else {
+      setAlertaSistema({
+        tipo: "error",
+        mensaje: `Error al autenticar: ${resp.error}`,
+      });
+    }
+    setCargandoAuth(false);
+  };
+
+  const ejecutarCerrarSesion = async () => {
+    setCargandoAuth(true);
+    await cerrarSesion();
+    setUsuarioSesion(null);
+    setCargandoAuth(false);
+    setAlertaSistema({
+      tipo: "info",
+      mensaje: "Sesión GoTrue cerrada correctamente.",
+    });
+  };
+
+  // Login del Portal SuperAdmin Independiente (`admin` / `rootadmin1234`)
+  const manejarLoginPortalSuperAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAutenticandoSuperAdmin(true);
+    setErrorLoginSuperAdmin(null);
+    try {
+      const res = await autenticarPortalSuperAdmin(
+        superAdminUserInput,
+        superAdminPassInput
+      );
+      if (!res.ok) {
+        setErrorLoginSuperAdmin(
+          res.error || "Usuario o contraseña de SuperAdmin incorrectos."
+        );
+        return;
+      }
+      setSuperAdminAutenticado(true);
+      setSuperAdminPassInput("");
+    } finally {
+      setAutenticandoSuperAdmin(false);
+    }
+  };
+
+  const manejarSalirPortalSuperAdmin = async () => {
+    await cerrarSesionPortalSuperAdmin();
+    setSuperAdminAutenticado(false);
+    setEnPortalSuperAdmin(false);
+    setSuperAdminUserInput("");
+    setSuperAdminPassInput("");
+  };
 
   useEffect(() => {
     const timer = setInterval(() => setAhora(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 
-  // Estado de horarios respecto a la regla estricta T - 3 minutos
+  // Estado de horarios respecto a la regla estricta T - 3 minutos (Hora Venezuela UTC-4)
   const estadoHorarios = useMemo(() => {
-    // Sincronización estricta con la hora oficial de Venezuela (America/Caracas, UTC-4)
     const caracasTimeStr = ahora.toLocaleTimeString("en-GB", {
       timeZone: "America/Caracas",
       hour12: false,
@@ -369,7 +502,8 @@ export default function TaquillaPosSystem() {
       second: "2-digit",
     });
     const [hActual, mActual, sActual] = caracasTimeStr.split(":").map(Number);
-    const segsDiaActual = (hActual || 0) * 3600 + (mActual || 0) * 60 + (sActual || 0);
+    const segsDiaActual =
+      (hActual || 0) * 3600 + (mActual || 0) * 60 + (sActual || 0);
 
     return HORARIOS_OFICIALES_LOTTO_ACTIVO.map((h) => {
       const [hh, mm] = h.hora24.split(":").map(Number);
@@ -398,6 +532,14 @@ export default function TaquillaPosSystem() {
       estadoHorarios[estadoHorarios.length - 1],
     [estadoHorarios]
   );
+
+  // Seleccionar automáticamente el próximo sorteo abierto si el actual ya cerró
+  useEffect(() => {
+    const actual = estadoHorarios.find((h) => h.id === sorteoSeleccionadoId);
+    if (actual && !actual.abiertoParaVenta && proximoSorteoAbierto?.abiertoParaVenta) {
+      setSorteoSeleccionadoId(proximoSorteoAbierto.id);
+    }
+  }, [estadoHorarios, sorteoSeleccionadoId, proximoSorteoAbierto]);
 
   const formatearSegundos = (totalSegs: number) => {
     if (totalSegs <= 0) return "00:00:00 (LOCKDOWN)";
@@ -443,14 +585,35 @@ export default function TaquillaPosSystem() {
       return;
     }
 
-    const monto = parseFloat(montoInput);
-    if (isNaN(monto) || monto <= 0) {
-      setAlertaSistema({
-        tipo: "error",
-        mensaje: "Ingrese un monto en USD mayor a $0.00.",
-      });
-      inputMontoRef.current?.focus();
-      return;
+    const valBs = parseFloat(montoBsInput);
+    const valUsd = parseFloat(montoInput);
+
+    // Determinar monto exacto en USD y en Bs. según lo que digitó el cajero
+    let montoUsdFinal = valUsd;
+    let montoBsFinal = valBs;
+
+    if (monedaFoco === "BS") {
+      if (isNaN(valBs) || valBs <= 0) {
+        setAlertaSistema({
+          tipo: "error",
+          mensaje: "Ingrese un monto válido en Bolívares (Bs.) mayor a 0.",
+        });
+        inputMontoBsRef.current?.focus();
+        return;
+      }
+      montoBsFinal = Number(valBs.toFixed(2));
+      montoUsdFinal = Number(Math.max(0.01, valBs / tasaBcv).toFixed(2));
+    } else {
+      if (isNaN(valUsd) || valUsd <= 0) {
+        setAlertaSistema({
+          tipo: "error",
+          mensaje: "Ingrese un monto válido en Divisa ($ USD) mayor a 0.",
+        });
+        inputMontoRef.current?.focus();
+        return;
+      }
+      montoUsdFinal = Number(valUsd.toFixed(2));
+      montoBsFinal = Number((montoUsdFinal * tasaBcv).toFixed(2));
     }
 
     const horario = estadoHorarios.find((h) => h.id === sorteoSeleccionadoId);
@@ -469,18 +632,20 @@ export default function TaquillaPosSystem() {
       return;
     }
 
-    const disponible = obtenerCupoDisponible(
+    const disponibleUsd = obtenerCupoDisponible(
       sorteoSeleccionadoId,
       figura.dbNumber
     );
-    if (monto > disponible) {
+    if (montoUsdFinal > disponibleUsd) {
       setAlertaSistema({
         tipo: "error",
         mensaje: `Cupo agotado para esta figura (${figura.codigo} - ${
           figura.nombre
         } en sorteo ${
           horario.etiqueta
-        }). Cupo disponible: $${disponible.toFixed(2)} USD.`,
+        }). Disponible: Bs. ${(disponibleUsd * tasaBcv).toFixed(
+          2
+        )} ($${disponibleUsd.toFixed(2)} USD).`,
       });
       return;
     }
@@ -492,7 +657,8 @@ export default function TaquillaPosSystem() {
         sorteoId: sorteoSeleccionadoId,
         sorteoEtiqueta: horario.etiqueta,
         figura,
-        montoUsd: Number(monto.toFixed(2)),
+        montoUsd: montoUsdFinal,
+        montoBs: montoBsFinal,
       },
     ]);
 
@@ -506,8 +672,9 @@ export default function TaquillaPosSystem() {
     [carrito]
   );
   const totalCarritoBs = useMemo(
-    () => Number((totalCarritoUsd * tasaBcv).toFixed(2)),
-    [totalCarritoUsd, tasaBcv]
+    () =>
+      Number(carrito.reduce((acc, item) => acc + item.montoBs, 0).toFixed(2)),
+    [carrito]
   );
 
   // Procesar Emisión Transaccional del Ticket + Despacho por WhatsApp al Cliente
@@ -542,7 +709,6 @@ export default function TaquillaPosSystem() {
         modoEntrega
       );
 
-      // Verificación estricta de backend: si la transacción falló, abortar de inmediato sin generar ticket falso
       if (!respuestaRpc.ok || !respuestaRpc.ticket) {
         setAlertaSistema({
           tipo: "error",
@@ -554,17 +720,18 @@ export default function TaquillaPosSystem() {
         return;
       }
 
-      // Ticket confirmado genuino proveniente de Supabase
       const ticketConfirmado = respuestaRpc.ticket;
       const ticketIdFinal = ticketConfirmado.ticket_id;
-      const serialCortoFinal = String(ticketConfirmado.serial_corto).padStart(7, "0");
+      const serialCortoFinal = String(ticketConfirmado.serial_corto).padStart(
+        7,
+        "0"
+      );
       const codigoSeguridadFinal = ticketConfirmado.codigo_seguridad;
       const qrPayloadFinal = ticketConfirmado.qr_payload;
       const pinReclamoCorto = `${serialCortoFinal}-${codigoSeguridadFinal
         .slice(0, 8)
         .toUpperCase()}`;
 
-      // Actualizar el estado de cupos acumulados del comercio únicamente tras confirmación real del servidor
       const nuevosCupos = { ...cuposAcumulados };
       for (const item of carrito) {
         const k = `${tenantActual.id}_${item.sorteoId}_${item.figura.dbNumber}`;
@@ -582,7 +749,7 @@ export default function TaquillaPosSystem() {
       const datosImpresion: DatosTicketTermico = {
         comercioNombre: tenantActual.nombre,
         comercioRif: tenantActual.rif,
-        cajeroNombre: "Magaly Rodríguez",
+        cajeroNombre: usuarioSesion?.nombre || "Magaly Rodríguez",
         serialCorto: serialCortoFinal,
         fechaHoraEmision: fechaStr,
         tasaBcv,
@@ -596,7 +763,7 @@ export default function TaquillaPosSystem() {
           codigoAnimal: c.figura.codigo,
           nombreAnimal: c.figura.nombre,
           montoUsd: c.montoUsd,
-          montoBs: Number((c.montoUsd * tasaBcv).toFixed(2)),
+          montoBs: c.montoBs,
           premioPotencialUsd: Number((c.montoUsd * 30).toFixed(2)),
         })),
       };
@@ -647,7 +814,6 @@ export default function TaquillaPosSystem() {
       setUltimoTicketWhatsApp(nuevoTicketHistorico);
       setCarrito([]);
 
-      // Despacho por WhatsApp (Intenta API silenciosa en /api/whatsapp/send; si no hay token de pago, abre wa.me directo)
       if (modoEntrega === "WHATSAPP" || modoEntrega === "AMBOS") {
         try {
           const respWa = await fetch("/api/whatsapp/send", {
@@ -680,7 +846,11 @@ export default function TaquillaPosSystem() {
 
       setAlertaSistema({
         tipo: "exito",
-        mensaje: `Ticket #${serialCortoFinal} emitido y despachado al WhatsApp ${clienteTelefonoInput} (PIN Reclamo: ${pinReclamoCorto}).`,
+        mensaje: `Ticket #${serialCortoFinal} emitido por Bs. ${totalCarritoBs.toFixed(
+          2
+        )} ($${totalCarritoUsd.toFixed(
+          2
+        )} USD) y despachado al WhatsApp ${clienteTelefonoInput} (PIN: ${pinReclamoCorto}).`,
       });
     } finally {
       setProcesandoVenta(false);
@@ -688,41 +858,42 @@ export default function TaquillaPosSystem() {
     }
   };
 
-  const sincronizarTasaBcvAhora = async () => {
+  const sincronizarTasaBcvAhora = async (silencioso: boolean = false) => {
     setSincronizandoBcv(true);
     try {
-      // 1. Obtener tasa oficial vigente mediante Server Action pública
-      const tasaVigente = await obtenerTasaBcvActual();
-      if (tasaVigente && tasaVigente > 0) {
-        setTasaBcv(tasaVigente);
-        setAlertaSistema({
-          tipo: "info",
-          mensaje: `Tasa Oficial BCV sincronizada: Bs. ${tasaVigente.toFixed(
-            4
-          )} / USD`,
-        });
-        return;
-      }
+      const res = await sincronizarTasaBcvEnVivo(true);
+      if (res.tasa && res.tasa > 0) {
+        setTasaBcv(res.tasa);
+        setTasaManualSuperAdminInput(res.tasa.toFixed(2));
+        const horaStr = new Intl.DateTimeFormat("es-VE", {
+          timeZone: "America/Caracas",
+          hour: "2-digit",
+          minute: "2-digit",
+        }).format(new Date());
+        setUltimaHoraSincBcv(
+          res.actualizadoEnVivo ? `BCV en vivo (${horaStr})` : `BD (${horaStr})`
+        );
 
-      // 2. Fallback de contingencia a endpoint de cron con clave de autorización
-      const cronKey =
-        process.env.NEXT_PUBLIC_CRON_SECRET ||
-        "bancapro_cron_job_auth_secret_2026";
-      const res = await fetch(`/api/cron/bcv?key=${cronKey}`);
-      if (res.ok) {
-        const json = await res.json();
-        if (json?.tasa_vigente?.tasa) {
-          setTasaBcv(Number(json.tasa_vigente.tasa));
+        setMontoBsInput((bsPrev) => {
+          const valBs = parseFloat(bsPrev);
+          if (!isNaN(valBs) && valBs > 0) {
+            setMontoInput(Math.max(0.01, valBs / res.tasa).toFixed(2));
+          }
+          return bsPrev;
+        });
+
+        if (!silencioso) {
           setAlertaSistema({
             tipo: "info",
-            mensaje: `Tasa Oficial BCV sincronizada: Bs. ${Number(
-              json.tasa_vigente.tasa
-            ).toFixed(4)} / USD`,
+            mensaje: `Tasa Oficial BCV sincronizada en vivo: Bs. ${res.tasa.toFixed(
+              2
+            )} / USD`,
           });
         }
+        return;
       }
     } catch {
-      // Mantiene tasa actual
+      // Fallback a tasa actual
     } finally {
       setSincronizandoBcv(false);
     }
@@ -744,7 +915,9 @@ export default function TaquillaPosSystem() {
     if (!resp.ok) {
       setAlertaSistema({
         tipo: "error",
-        mensaje: `RECHAZO EN ANULACIÓN: ${resp.error || "Fallo al anular ticket en el servidor."}`,
+        mensaje: `RECHAZO EN ANULACIÓN: ${
+          resp.error || "Fallo al anular ticket en el servidor."
+        }`,
       });
       return;
     }
@@ -772,7 +945,6 @@ export default function TaquillaPosSystem() {
     });
   };
 
-  // Verificación de Ticket Ganador mediante PIN de WhatsApp, Teléfono del Cliente, Serial o Firma HMAC-SHA256
   const verificarQrParaCobro = (valorInput?: string) => {
     const query = (valorInput ?? inputQrCobro).trim();
     setErrorVerificacionQr(null);
@@ -812,7 +984,9 @@ export default function TaquillaPosSystem() {
     if (!resp.ok) {
       setAlertaSistema({
         tipo: "error",
-        mensaje: `RECHAZO EN PAGO: ${resp.error || "Fallo al procesar pago en el servidor."}`,
+        mensaje: `RECHAZO EN PAGO: ${
+          resp.error || "Fallo al procesar pago en el servidor."
+        }`,
       });
       return;
     }
@@ -833,11 +1007,9 @@ export default function TaquillaPosSystem() {
       tipo: "exito",
       mensaje: `PAGO IDEMPOTENTE REGISTRADO: Ticket #${
         actualizado.serialCorto
-      } (Cliente WA: ${
-        actualizado.clienteTelefono
-      }) pagado por $${actualizado.premioTotalUsd.toFixed(2)} USD (Bs. ${(
+      } (Cliente WA: ${actualizado.clienteTelefono}) pagado por Bs. ${(
         actualizado.premioTotalUsd * tasaBcv
-      ).toFixed(2)}).`,
+      ).toFixed(2)} ($${actualizado.premioTotalUsd.toFixed(2)} USD).`,
     });
   };
 
@@ -854,7 +1026,9 @@ export default function TaquillaPosSystem() {
     if (!resp.ok) {
       setAlertaSistema({
         tipo: "error",
-        mensaje: `RECHAZO EN LIQUIDACIÓN: ${resp.error || "Fallo al liquidar sorteo."}`,
+        mensaje: `RECHAZO EN LIQUIDACIÓN: ${
+          resp.error || "Fallo al liquidar sorteo."
+        }`,
       });
       return;
     }
@@ -933,9 +1107,437 @@ export default function TaquillaPosSystem() {
     };
   }, [ticketsPorTenant, tenantActual.id, tasaBcv]);
 
+  // ============================================================================
+  // PORTAL INDEPENDIENTE DE SUPERADMIN (ACCESO EXCLUSIVO: admin / rootadmin1234)
+  // ============================================================================
+  if (enPortalSuperAdmin) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+        <header className="border-b border-indigo-500/30 bg-slate-900/95 px-4 py-3">
+          <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-10 rounded-xl bg-indigo-500/20 border border-indigo-500/50 flex items-center justify-center text-indigo-300 font-black text-lg">
+                SA
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h1 className="font-bold text-base text-white">
+                    BancaPro Core — Portal SuperAdmin Global
+                  </h1>
+                  <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">
+                    Control Maestro Multi-Tenant
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400">
+                  Gestión independiente de comercios, cupos globales, tasa BCV y liquidación maestra.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setEnPortalSuperAdmin(false)}
+                className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 border border-slate-700 transition"
+              >
+                ← Volver a Taquilla Operativa
+              </button>
+              {superAdminAutenticado && (
+                <button
+                  type="button"
+                  onClick={manejarSalirPortalSuperAdmin}
+                  className="px-3.5 py-2 rounded-lg bg-rose-950/80 hover:bg-rose-900 text-xs font-semibold text-rose-200 border border-rose-700/50 flex items-center gap-1.5 transition"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  Cerrar Sesión SuperAdmin
+                </button>
+              )}
+            </div>
+          </div>
+        </header>
+
+        <main className="flex-1 max-w-7xl w-full mx-auto p-4 flex flex-col justify-center">
+          {!superAdminAutenticado ? (
+            /* PANTALLA DE LOGIN EXCLUSIVA PARA EL PORTAL SUPERADMIN */
+            <div className="max-w-md w-full mx-auto bg-slate-900 border border-indigo-500/40 rounded-2xl p-6 shadow-2xl space-y-5">
+              <div className="flex items-center gap-3">
+                <div className="p-3 rounded-xl bg-indigo-500/15 border border-indigo-500/40 text-indigo-400">
+                  <KeyRound className="w-6 h-6" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-white">
+                    Acceso Restringido — Portal SuperAdmin
+                  </h2>
+                  <p className="text-xs text-slate-400">
+                    Ingrese sus credenciales maestras para administrar la red de comercios.
+                  </p>
+                </div>
+              </div>
+
+              {errorLoginSuperAdmin && (
+                <div className="p-3 rounded-lg bg-red-950/80 border border-red-500/60 text-xs text-red-200 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+                  <span>{errorLoginSuperAdmin}</span>
+                </div>
+              )}
+
+              <form onSubmit={manejarLoginPortalSuperAdmin} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Usuario SuperAdmin
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    autoFocus
+                    value={superAdminUserInput}
+                    onChange={(e) => setSuperAdminUserInput(e.target.value)}
+                    placeholder="admin"
+                    className="w-full bg-slate-950 border border-slate-700 focus:border-indigo-500 rounded-lg px-3.5 py-2.5 text-sm font-mono text-white focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Contraseña Maestra
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    value={superAdminPassInput}
+                    onChange={(e) => setSuperAdminPassInput(e.target.value)}
+                    placeholder="••••••••••••"
+                    className="w-full bg-slate-950 border border-slate-700 focus:border-indigo-500 rounded-lg px-3.5 py-2.5 text-sm font-mono text-white focus:outline-none"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={autenticandoSuperAdmin}
+                  className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs uppercase tracking-wider transition shadow-lg"
+                >
+                  {autenticandoSuperAdmin
+                    ? "Verificando Credenciales..."
+                    : "Ingresar al Portal SuperAdmin"}
+                </button>
+              </form>
+            </div>
+          ) : (
+            /* PANEL COMPLETO DE CONTROL SUPERADMIN MULTI-TENANT */
+            <div className="space-y-6">
+              {alertaSistema && (
+                <div
+                  className={`flex items-center justify-between px-4 py-2.5 rounded-lg border text-xs font-medium ${
+                    alertaSistema.tipo === "error"
+                      ? "bg-red-950/70 border-red-500/50 text-red-200"
+                      : alertaSistema.tipo === "exito"
+                      ? "bg-emerald-950/70 border-emerald-500/50 text-emerald-200"
+                      : "bg-sky-950/70 border-sky-500/50 text-sky-200"
+                  }`}
+                >
+                  <span>{alertaSistema.mensaje}</span>
+                  <button
+                    onClick={() => setAlertaSistema(null)}
+                    className="text-slate-400 hover:text-white ml-4"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
+              {/* Control Global de Tasa Oficial BCV y Comercio en Taquilla */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="bg-slate-900 border border-sky-500/30 rounded-xl p-5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      <DollarSign className="w-4 h-4 text-sky-400" />
+                      <span>Control Maestro de Tasa Oficial BCV (USD / Bs.)</span>
+                    </h3>
+                    <span className="text-xs font-mono text-sky-300">
+                      Actual: Bs. {tasaBcv.toFixed(2)} ({ultimaHoraSincBcv})
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    Sincronice automáticamente desde el Banco Central de Venezuela o fije una tasa oficial para todos los comercios.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={tasaManualSuperAdminInput}
+                      onChange={(e) =>
+                        setTasaManualSuperAdminInput(e.target.value)
+                      }
+                      placeholder={tasaBcv.toFixed(2)}
+                      className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 font-mono text-sm text-white w-40"
+                    />
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const nueva = parseFloat(tasaManualSuperAdminInput);
+                        if (isNaN(nueva) || nueva <= 0) return;
+                        setTasaBcv(nueva);
+                        await actualizarTasaBcv(nueva);
+                        setUltimaHoraSincBcv("Fijada por SuperAdmin");
+                        setAlertaSistema({
+                          tipo: "exito",
+                          mensaje: `Tasa BCV actualizada globalmente a Bs. ${nueva.toFixed(
+                            2
+                          )} / USD en Supabase.`,
+                        });
+                      }}
+                      className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs"
+                    >
+                      Fijar Tasa en BD
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => sincronizarTasaBcvAhora(false)}
+                      disabled={sincronizandoBcv}
+                      className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-300 border border-sky-500/30 font-bold text-xs flex items-center gap-1.5"
+                    >
+                      <RefreshCw
+                        className={`w-3.5 h-3.5 ${
+                          sincronizandoBcv ? "animate-spin" : ""
+                        }`}
+                      />
+                      Sincronizar API Oficial BCV
+                    </button>
+                  </div>
+                </div>
+
+                {/* Selector de Comercio Activo y Liquidación Global */}
+                <div className="bg-slate-900 border border-amber-500/30 rounded-xl p-5 space-y-3">
+                  <h3 className="text-sm font-bold text-amber-300 flex items-center gap-2">
+                    <Award className="w-4 h-4 text-amber-400" />
+                    <span>Liquidación Oficial de Sorteo (Todos los Comercios)</span>
+                  </h3>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1">
+                        Horario de Sorteo
+                      </label>
+                      <select
+                        value={sorteoLiquidarId}
+                        onChange={(e) => {
+                          setSorteoLiquidarId(Number(e.target.value));
+                          setPasoConfirmacionManual(1);
+                        }}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-white"
+                      >
+                        {HORARIOS_OFICIALES_LOTTO_ACTIVO.map((h) => (
+                          <option key={h.id} value={h.id}>
+                            {h.etiqueta}{" "}
+                            {resultadosSorteo[h.id] ? "(YA LIQUIDADO)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1">
+                        Animal Ganador (0, 00, 01..36)
+                      </label>
+                      <input
+                        type="text"
+                        maxLength={2}
+                        value={animalGanadorManual}
+                        onChange={(e) => {
+                          setAnimalGanadorManual(e.target.value);
+                          setPasoConfirmacionManual(1);
+                        }}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-white"
+                      />
+                    </div>
+                  </div>
+                  {pasoConfirmacionManual === 1 ? (
+                    <button
+                      onClick={() => setPasoConfirmacionManual(2)}
+                      className="w-full py-2 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs uppercase rounded-lg"
+                    >
+                      Paso 1: Pre-validar Animal Ganador
+                    </button>
+                  ) : (
+                    <div className="flex gap-2">
+                      <button
+                        onClick={ejecutarLiquidacionManualContingencia}
+                        className="flex-1 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase rounded-lg"
+                      >
+                        Paso 2: Confirmar Liquidación 30x
+                      </button>
+                      <button
+                        onClick={() => setPasoConfirmacionManual(1)}
+                        className="px-4 py-2 bg-slate-800 text-slate-300 text-xs rounded-lg"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Aprovisionamiento y Monitoreo Multi-Tenant */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <PlusCircle className="w-4 h-4 text-emerald-400" />
+                    <span>Aprovisionar Nuevo Comercio / Bodega (Tenant RLS)</span>
+                  </h3>
+
+                  <div className="space-y-3 text-xs">
+                    <div>
+                      <label className="block text-slate-400 mb-1">
+                        Nombre del Comercio / Agencia
+                      </label>
+                      <input
+                        type="text"
+                        value={nuevoComercioNombre}
+                        onChange={(e) => setNuevoComercioNombre(e.target.value)}
+                        placeholder="Ej: Inversiones El Gran Premio C.A."
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 mb-1">RIF</label>
+                      <input
+                        type="text"
+                        value={nuevoComercioRif}
+                        onChange={(e) => setNuevoComercioRif(e.target.value)}
+                        placeholder="J-41239876-0"
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 mb-1">
+                        Correo del Administrador del Comercio
+                      </label>
+                      <input
+                        type="email"
+                        value={nuevoComercioEmail}
+                        onChange={(e) => setNuevoComercioEmail(e.target.value)}
+                        placeholder="admin@comercio.local"
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 mb-1">
+                        Pérdida Máxima por Sorteo (USD) → Cupo = Pérdida / 30
+                      </label>
+                      <input
+                        type="number"
+                        value={nuevoComercioPerdidaMax}
+                        onChange={(e) =>
+                          setNuevoComercioPerdidaMax(e.target.value)
+                        }
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
+                      />
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        if (!nuevoComercioNombre || !nuevoComercioRif) return;
+                        const perdida =
+                          parseFloat(nuevoComercioPerdidaMax) || 300;
+                        const nuevo: TenantComercio = {
+                          id: crypto.randomUUID(),
+                          nombre: nuevoComercioNombre,
+                          rif: nuevoComercioRif,
+                          telefono: "+58 414-0000000",
+                          adminEmail:
+                            nuevoComercioEmail || "admin@nuevo-comercio.local",
+                          perdidaMaximaUsd: perdida,
+                          cupoAnimalUsd: Number((perdida / 30).toFixed(2)),
+                          ventasHoyUsd: 0,
+                          activo: true,
+                        };
+                        setTenants((prev) => [...prev, nuevo]);
+                        setNuevoComercioNombre("");
+                        setNuevoComercioRif("");
+                        setNuevoComercioEmail("");
+                        setAlertaSistema({
+                          tipo: "exito",
+                          mensaje: `Tenant "${
+                            nuevo.nombre
+                          }" creado con aislamiento RLS activo (tenant_id: ${nuevo.id.slice(
+                            0,
+                            8
+                          )}...).`,
+                        });
+                      }}
+                      className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold uppercase rounded-lg transition"
+                    >
+                      Crear Tenant y Asignar Políticas RLS
+                    </button>
+                  </div>
+                </div>
+
+                <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-xl p-5">
+                  <h3 className="text-sm font-bold text-white mb-3">
+                    Comercios Activos en la Plataforma (Fondos y Cajas 100% Aislados)
+                  </h3>
+                  <div className="space-y-3">
+                    {tenants.map((t) => (
+                      <div
+                        key={t.id}
+                        className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3"
+                      >
+                        <div>
+                          <div className="font-bold text-sm text-white flex items-center gap-2">
+                            <span>{t.nombre}</span>
+                            <span className="text-[10px] font-mono bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded">
+                              {t.rif}
+                            </span>
+                            {tenantActualId === t.id && (
+                              <span className="text-[10px] font-mono bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded">
+                                Seleccionado en Taquilla
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-slate-400 font-mono mt-1">
+                            Admin: {t.adminEmail} • Tenant UUID:{" "}
+                            {t.id.slice(0, 12)}...
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                          <div className="text-right font-mono text-xs">
+                            <div className="text-emerald-400 font-bold">
+                              Cupo Animal: ${t.cupoAnimalUsd.toFixed(2)} USD (Bs.{" "}
+                              {(t.cupoAnimalUsd * tasaBcv).toFixed(2)})
+                            </div>
+                            <div className="text-slate-400">
+                              Pérdida Máx: ${t.perdidaMaximaUsd.toFixed(2)} USD
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setTenantActualId(t.id);
+                              setCarrito([]);
+                              setAlertaSistema({
+                                tipo: "info",
+                                mensaje: `Taquilla vinculada al comercio: ${t.nombre}`,
+                              });
+                            }}
+                            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 border border-slate-700"
+                          >
+                            Inspeccionar
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-      {/* BARRA SUPERIOR OPERATIVA MULTI-TENANT */}
+      {/* BARRA SUPERIOR OPERATIVA DEL COMERCIO */}
       <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur px-4 py-3 print:hidden">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -951,25 +1553,12 @@ export default function TaquillaPosSystem() {
                   WhatsApp Ticket • RLS Multi-Tenant
                 </span>
               </div>
-              <div className="flex items-center gap-2 text-xs text-slate-400 mt-0.5">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 mt-0.5">
                 <Building2 className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Comercio Activo:</span>
-                <select
-                  value={tenantActualId}
-                  onChange={(e) => {
-                    setTenantActualId(e.target.value);
-                    setCarrito([]);
-                    setTicketVerificadoCobro(null);
-                  }}
-                  className="bg-slate-800 text-emerald-300 font-semibold rounded px-2 py-0.5 border border-slate-700 focus:outline-none focus:border-emerald-500"
-                >
-                  {tenants.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.nombre} ({t.rif})
-                    </option>
-                  ))}
-                </select>
-                <div className="flex items-center gap-1.5 ml-2">
+                <span className="font-semibold text-emerald-300">
+                  {tenantActual.nombre} ({tenantActual.rif})
+                </span>
+                <div className="flex items-center gap-1.5 ml-1">
                   {usuarioSesion ? (
                     <div className="flex items-center gap-1.5">
                       <span
@@ -977,7 +1566,7 @@ export default function TaquillaPosSystem() {
                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
                       >
                         <ShieldCheck className="w-3 h-3 text-emerald-400" />
-                        {usuarioSesion.nombre} ({usuarioSesion.rol})
+                        {usuarioSesion.nombre}
                       </span>
                       <button
                         onClick={ejecutarCerrarSesion}
@@ -995,7 +1584,9 @@ export default function TaquillaPosSystem() {
                       className="px-2 py-0.5 rounded text-[11px] font-medium bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 transition flex items-center gap-1"
                     >
                       <Lock className="w-3 h-3" />
-                      {cargandoAuth ? "Autenticando..." : "Conectar GoTrue (Magaly)"}
+                      {cargandoAuth
+                        ? "Autenticando..."
+                        : "Conectar GoTrue (Magaly)"}
                     </button>
                   )}
                 </div>
@@ -1004,6 +1595,7 @@ export default function TaquillaPosSystem() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
+            {/* Contador Regresivo de Sorteo (T - 3m) */}
             <div className="flex items-center gap-2.5 bg-slate-950 border border-amber-500/30 rounded-lg px-3 py-1.5">
               <Clock className="w-4 h-4 text-amber-400 animate-pulse" />
               <div>
@@ -1018,21 +1610,25 @@ export default function TaquillaPosSystem() {
               </div>
             </div>
 
+            {/* Indicador en Vivo de Tasa Oficial BCV */}
             <div className="flex items-center gap-2.5 bg-slate-950 border border-sky-500/30 rounded-lg px-3 py-1.5">
               <DollarSign className="w-4 h-4 text-sky-400" />
               <div>
-                <div className="text-[10px] uppercase tracking-wider text-slate-400">
-                  Tasa Oficial BCV
+                <div className="text-[10px] uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                  <span>Tasa Oficial BCV</span>
+                  <span className="text-[9px] text-emerald-400">
+                    • {ultimaHoraSincBcv}
+                  </span>
                 </div>
                 <div className="font-mono text-sm font-bold text-sky-300">
-                  Bs. {tasaBcv.toFixed(2)} / USD
+                  Bs. {tasaBcv.toFixed(2)} / $1 USD
                 </div>
               </div>
               <button
-                onClick={sincronizarTasaBcvAhora}
+                onClick={() => sincronizarTasaBcvAhora(false)}
                 disabled={sincronizandoBcv}
-                title="Sincronizar con BCV"
-                className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-sky-300 transition"
+                title="Sincronizar ahora con el BCV"
+                className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 text-sky-300 border border-slate-800 transition"
               >
                 <RefreshCw
                   className={`w-3.5 h-3.5 ${
@@ -1042,7 +1638,8 @@ export default function TaquillaPosSystem() {
               </button>
             </div>
 
-            <nav className="flex bg-slate-950 p-1 rounded-lg border border-slate-800">
+            {/* Navegación Operativa del Comercio + Botón al Portal SuperAdmin Independiente */}
+            <nav className="flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800 gap-1">
               <button
                 onClick={() => setVistaActiva("POS")}
                 className={`px-3 py-1.5 rounded-md text-xs font-semibold transition flex items-center gap-1.5 ${
@@ -1063,7 +1660,7 @@ export default function TaquillaPosSystem() {
                 }`}
               >
                 <MessageCircle className="w-3.5 h-3.5" />
-                2. Reclamar Premio (WhatsApp / QR)
+                2. Reclamar Premio
               </button>
               <button
                 onClick={() => setVistaActiva("ADMIN_COMERCIO")}
@@ -1077,15 +1674,11 @@ export default function TaquillaPosSystem() {
                 3. Caja & Cupos
               </button>
               <button
-                onClick={() => setVistaActiva("SUPERADMIN")}
-                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition flex items-center gap-1.5 ${
-                  vistaActiva === "SUPERADMIN"
-                    ? "bg-emerald-600 text-white shadow"
-                    : "text-slate-400 hover:text-white"
-                }`}
+                onClick={() => setEnPortalSuperAdmin(true)}
+                className="ml-1 px-3 py-1.5 rounded-md text-xs font-semibold bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-500/40 transition flex items-center gap-1.5"
               >
-                <Users className="w-3.5 h-3.5" />
-                4. SuperAdmin
+                <KeyRound className="w-3.5 h-3.5 text-indigo-400" />
+                Portal SuperAdmin
               </button>
             </nav>
           </div>
@@ -1122,10 +1715,10 @@ export default function TaquillaPosSystem() {
         </div>
       )}
 
-      {/* CONTENIDO PRINCIPAL */}
+      {/* CONTENIDO PRINCIPAL DE LA TAQUILLA */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 print:hidden">
         {/* =====================================================================
-            VISTA 1: TAQUILLA POS CON DESPACHO DE TICKET POR WHATSAPP (SIN IMPRESORA)
+            VISTA 1: TAQUILLA POS CON MONTO EN BOLÍVARES (Bs.) Y DIVISA (USD)
            ===================================================================== */}
         {vistaActiva === "POS" && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
@@ -1133,12 +1726,14 @@ export default function TaquillaPosSystem() {
             <div className="lg:col-span-8 space-y-4">
               {/* Selector de Sorteo con bloqueo automático T - 3 minutos */}
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                <div className="flex items-center justify-between mb-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
                   <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
                     1. Seleccione Horario de Sorteo (Bloqueo Automático T - 3 Minutos)
                   </span>
                   <span className="text-xs font-mono text-emerald-400">
-                    Cupo Máx por Figura: ${tenantActual.cupoAnimalUsd.toFixed(2)} USD
+                    Cupo Máx por Figura: Bs.{" "}
+                    {(tenantActual.cupoAnimalUsd * tasaBcv).toFixed(2)} ($
+                    {tenantActual.cupoAnimalUsd.toFixed(2)} USD)
                   </span>
                 </div>
                 <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
@@ -1177,24 +1772,33 @@ export default function TaquillaPosSystem() {
                 </div>
               </div>
 
-              {/* Barra de Captura Ultra-Rápida 100% Teclado Numérico */}
-              <div className="bg-slate-900 border border-emerald-500/40 rounded-xl p-4 shadow-lg">
-                <div className="flex items-center justify-between mb-3">
+              {/* Barra de Captura Ultra-Rápida con Doble Moneda Sincronizada (Bs. ⇄ USD) */}
+              <div className="bg-slate-900 border border-emerald-500/40 rounded-xl p-4 shadow-lg space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <Keyboard className="w-4 h-4 text-emerald-400" />
                     <h2 className="text-xs font-bold uppercase tracking-wider text-emerald-300">
-                      Entrada Rápida por Teclado Numérico (Ej: 05 + Enter = León)
+                      2. Entrada Rápida de Jugada en Bolívares (Bs.) y Divisa ($ USD)
                     </h2>
                   </div>
                   <span className="text-[11px] text-slate-400 font-mono">
-                    [Enter] Agregar Jugada • [F9] Emitir y Enviar por WhatsApp
+                    Premio Potencial (30x):{" "}
+                    <strong className="text-sky-300">
+                      Bs. {((parseFloat(montoBsInput) || 0) * 30).toFixed(2)}
+                    </strong>{" "}
+                    ({" "}
+                    <strong className="text-emerald-300">
+                      ${((parseFloat(montoInput) || 0) * 30).toFixed(2)} USD
+                    </strong>{" "}
+                    )
                   </span>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
-                  <div className="sm:col-span-4">
+                  {/* Código del Animalito */}
+                  <div className="sm:col-span-3">
                     <label className="block text-[11px] text-slate-400 mb-1 font-medium">
-                      Código Figura (0, 00, 01..36)
+                      Figura (0, 00, 01..36)
                     </label>
                     <div className="relative">
                       <input
@@ -1218,7 +1822,7 @@ export default function TaquillaPosSystem() {
                         className="w-full bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-lg px-3 py-2.5 font-mono text-lg font-bold text-white focus:outline-none"
                       />
                       {figuraPrevisualizada && (
-                        <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs font-semibold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                           {figuraPrevisualizada.emoji}{" "}
                           {figuraPrevisualizada.nombre}
                         </span>
@@ -1226,46 +1830,70 @@ export default function TaquillaPosSystem() {
                     </div>
                   </div>
 
-                  <div className="sm:col-span-5">
-                    <div className="flex justify-between text-[11px] text-slate-400 mb-1 font-medium">
-                      <span>Monto Jugada (USD)</span>
-                      <span className="text-sky-400 font-mono">
-                        ≈ Bs.{" "}
-                        {((parseFloat(montoInput) || 0) * tasaBcv).toFixed(2)}
-                      </span>
-                    </div>
-                    <div className="flex gap-1.5">
-                      <input
-                        ref={inputMontoRef}
-                        type="number"
-                        step="0.50"
-                        min="0.10"
-                        value={montoInput}
-                        onChange={(e) => setMontoInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            agregarJugadaAlCarrito();
-                          } else if (e.key === "F9") {
-                            e.preventDefault();
-                            procesarEmisionTicket();
-                          }
-                        }}
-                        className="w-full bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-lg px-3 py-2.5 font-mono text-lg font-bold text-emerald-400 focus:outline-none"
-                      />
-                      {["0.50", "1.00", "2.00", "5.00"].map((Preset) => (
-                        <button
-                          key={Preset}
-                          type="button"
-                          onClick={() => setMontoInput(Preset)}
-                          className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-xs font-mono rounded border border-slate-700 text-slate-200"
-                        >
-                          ${Preset}
-                        </button>
-                      ))}
-                    </div>
+                  {/* Monto en Bolívares (Bs.) — Principal para apuestas mínimas */}
+                  <div className="sm:col-span-3">
+                    <label className="block text-[11px] text-sky-300 mb-1 font-semibold">
+                      Monto en Bolívares (Bs.)
+                    </label>
+                    <input
+                      ref={inputMontoBsRef}
+                      type="number"
+                      step="1"
+                      min="1"
+                      value={montoBsInput}
+                      onChange={(e) => manejarCambioMontoBs(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          agregarJugadaAlCarrito();
+                        } else if (e.key === "F9") {
+                          e.preventDefault();
+                          procesarEmisionTicket();
+                        }
+                      }}
+                      className={`w-full bg-slate-950 border rounded-lg px-3 py-2.5 font-mono text-lg font-bold text-sky-300 focus:outline-none ${
+                        monedaFoco === "BS"
+                          ? "border-sky-500 ring-1 ring-sky-500/40"
+                          : "border-slate-700"
+                      }`}
+                    />
                   </div>
 
+                  {/* Icono de Conversión Automática */}
+                  <div className="hidden sm:flex sm:col-span-1 items-center justify-center pb-3 text-slate-500">
+                    <ArrowLeftRight className="w-4 h-4 text-emerald-400" />
+                  </div>
+
+                  {/* Monto en Divisa ($ USD) */}
+                  <div className="sm:col-span-2">
+                    <label className="block text-[11px] text-emerald-300 mb-1 font-semibold">
+                      Monto Divisa ($ USD)
+                    </label>
+                    <input
+                      ref={inputMontoRef}
+                      type="number"
+                      step="0.10"
+                      min="0.01"
+                      value={montoInput}
+                      onChange={(e) => manejarCambioMontoUsd(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          agregarJugadaAlCarrito();
+                        } else if (e.key === "F9") {
+                          e.preventDefault();
+                          procesarEmisionTicket();
+                        }
+                      }}
+                      className={`w-full bg-slate-950 border rounded-lg px-3 py-2.5 font-mono text-lg font-bold text-emerald-400 focus:outline-none ${
+                        monedaFoco === "USD"
+                          ? "border-emerald-500 ring-1 ring-emerald-500/40"
+                          : "border-slate-700"
+                      }`}
+                    />
+                  </div>
+
+                  {/* Botón Agregar al Ticket */}
                   <div className="sm:col-span-3">
                     <button
                       type="button"
@@ -1276,32 +1904,69 @@ export default function TaquillaPosSystem() {
                     </button>
                   </div>
                 </div>
+
+                {/* Botones de Apuesta Rápida en Bolívares (Bs.) y en Divisa ($ USD) */}
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/80 text-xs">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[11px] text-sky-400 font-semibold mr-1">
+                      Apuesta Rápida Bs.:
+                    </span>
+                    {[10, 20, 30, 50, 100, 200, 500].map((bsPreset) => (
+                      <button
+                        key={bsPreset}
+                        type="button"
+                        onClick={() => aplicarAtajoBs(bsPreset)}
+                        className="px-2.5 py-1 bg-sky-950/60 hover:bg-sky-900/80 text-sky-200 font-mono text-xs rounded border border-sky-500/30 transition"
+                      >
+                        Bs. {bsPreset}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[11px] text-emerald-400 font-semibold mr-1">
+                      Divisa $:
+                    </span>
+                    {[0.5, 1, 2, 5].map((usdPreset) => (
+                      <button
+                        key={usdPreset}
+                        type="button"
+                        onClick={() => aplicarAtajoUsd(usdPreset)}
+                        className="px-2.5 py-1 bg-emerald-950/50 hover:bg-emerald-900/70 text-emerald-200 font-mono text-xs rounded border border-emerald-500/30 transition"
+                      >
+                        ${usdPreset.toFixed(2)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
 
               {/* Matriz Interactiva de las 38 Figuras de Lotto Activo */}
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                    Catálogo Oficial Lotto Activo (38 Figuras - Paga 30x)
+                    Catálogo Oficial Lotto Activo (38 Figuras - Paga 30x en Bs. y USD)
                   </span>
                   <span className="text-[11px] text-slate-400">
-                    Clic directo en cualquier animalito para agregar
+                    Clic en cualquier animalito para agregar Bs. {montoBsInput} ($
+                    {montoInput})
                   </span>
                 </div>
 
                 <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2">
                   {CATALOGO_LOTTO_ACTIVO.map((animal) => {
-                    const disp = obtenerCupoDisponible(
+                    const dispUsd = obtenerCupoDisponible(
                       sorteoSeleccionadoId,
                       animal.dbNumber
                     );
+                    const dispBs = dispUsd * tasaBcv;
                     const porcentajeUsado = Math.min(
                       100,
-                      ((tenantActual.cupoAnimalUsd - disp) /
+                      ((tenantActual.cupoAnimalUsd - dispUsd) /
                         tenantActual.cupoAnimalUsd) *
                         100
                     );
-                    const agotado = disp <= 0;
+                    const agotado = dispUsd <= 0;
 
                     return (
                       <button
@@ -1326,15 +1991,15 @@ export default function TaquillaPosSystem() {
                         </div>
                         <div className="mt-1.5 w-full">
                           <div className="flex justify-between text-[9px] font-mono text-slate-400">
-                            <span>Cupo:</span>
+                            <span>${dispUsd.toFixed(1)}</span>
                             <span
                               className={
                                 agotado
                                   ? "text-red-400 font-bold"
-                                  : "text-emerald-400"
+                                  : "text-sky-400"
                               }
                             >
-                              ${disp.toFixed(1)}
+                              Bs.{dispBs.toFixed(0)}
                             </span>
                           </div>
                           <div className="w-full h-1 bg-slate-800 rounded-full overflow-hidden mt-0.5">
@@ -1357,7 +2022,7 @@ export default function TaquillaPosSystem() {
               </div>
             </div>
 
-            {/* COLUMNA DERECHA (4 cols): Ticket Digital por WhatsApp + Vista Previa de Mensaje Criptográfico */}
+            {/* COLUMNA DERECHA (4 cols): Ticket Digital por WhatsApp con Totales en Bs. y USD */}
             <div className="lg:col-span-4 space-y-4">
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col">
                 <div className="flex items-center justify-between border-b border-slate-800 pb-3">
@@ -1370,7 +2035,7 @@ export default function TaquillaPosSystem() {
                     </p>
                   </div>
                   <span className="text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded">
-                    Modo Sin Impresora Activo
+                    Bs. & USD Activo
                   </span>
                 </div>
 
@@ -1423,11 +2088,11 @@ export default function TaquillaPosSystem() {
                   )}
                 </div>
 
-                {/* Lista de Jugadas en el Carrito */}
+                {/* Lista de Jugadas en el Carrito Expresadas en Bs. y en Divisa (USD) */}
                 <div className="my-3 max-h-52 overflow-y-auto space-y-2 pr-1">
                   {carrito.length === 0 ? (
                     <div className="text-center py-6 text-xs text-slate-500 border border-dashed border-slate-800 rounded-lg">
-                      Sin jugadas aún. Digite el código (ej. 05) y presione Enter.
+                      Sin jugadas aún. Digite el monto en Bs. o USD y el código del animalito.
                     </div>
                   ) : (
                     carrito.map((item) => (
@@ -1447,17 +2112,17 @@ export default function TaquillaPosSystem() {
                             </span>
                           </div>
                           <div className="text-[10px] text-slate-400 font-mono mt-0.5">
-                            Premio Potencial (30x): $
-                            {(item.montoUsd * 30).toFixed(2)} USD
+                            Premio 30x: Bs. {(item.montoBs * 30).toFixed(2)} ($
+                            {(item.montoUsd * 30).toFixed(2)} USD)
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
                           <div className="text-right font-mono">
-                            <div className="font-bold text-emerald-400">
-                              ${item.montoUsd.toFixed(2)}
+                            <div className="font-bold text-sky-300">
+                              Bs. {item.montoBs.toFixed(2)}
                             </div>
-                            <div className="text-[10px] text-slate-400">
-                              Bs. {(item.montoUsd * tasaBcv).toFixed(2)}
+                            <div className="text-[10px] text-emerald-400 font-semibold">
+                              ${item.montoUsd.toFixed(2)} USD
                             </div>
                           </div>
                           <button
@@ -1478,7 +2143,7 @@ export default function TaquillaPosSystem() {
                   )}
                 </div>
 
-                {/* Resumen Financiero Dual USD / VES */}
+                {/* Resumen Financiero Dual Bs. / USD */}
                 <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-1.5">
                   <div className="flex justify-between text-xs text-slate-400">
                     <span>Total Jugadas:</span>
@@ -1486,16 +2151,16 @@ export default function TaquillaPosSystem() {
                       {carrito.length}
                     </span>
                   </div>
-                  <div className="flex justify-between text-sm font-bold text-white">
-                    <span>TOTAL A COBRAR (USD):</span>
-                    <span className="font-mono text-emerald-400">
-                      ${totalCarritoUsd.toFixed(2)} USD
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-sm font-bold text-sky-300 border-t border-slate-800 pt-1.5">
+                  <div className="flex justify-between text-sm font-bold text-sky-300">
                     <span>TOTAL EN BOLÍVARES (BCV):</span>
                     <span className="font-mono">
                       Bs. {totalCarritoBs.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-sm font-bold text-white border-t border-slate-800 pt-1.5">
+                    <span>EQUIVALENTE DIVISA (USD):</span>
+                    <span className="font-mono text-emerald-400">
+                      ${totalCarritoUsd.toFixed(2)} USD
                     </span>
                   </div>
                 </div>
@@ -1614,8 +2279,8 @@ export default function TaquillaPosSystem() {
                         <div className="flex justify-between text-[11px] text-slate-400 font-mono">
                           <span>WA: {tk.clienteTelefono}</span>
                           <span>
-                            ${tk.totalUsd.toFixed(2)} (Bs.{" "}
-                            {tk.totalBs.toFixed(2)})
+                            Bs. {tk.totalBs.toFixed(2)} ($
+                            {tk.totalUsd.toFixed(2)})
                           </span>
                         </div>
                         <div className="flex items-center justify-between pt-1 border-t border-slate-900">
@@ -1666,7 +2331,7 @@ export default function TaquillaPosSystem() {
                     <strong className="text-emerald-300">
                       PIN de Reclamo (Ej: 0001041-9F4C2E81)
                     </strong>
-                    , su número de teléfono o la firma HMAC para verificar y pagar su premio.
+                    , su número de teléfono o la firma HMAC para verificar y pagar su premio en Bs. o Divisa.
                   </p>
                 </div>
               </div>
@@ -1691,7 +2356,9 @@ export default function TaquillaPosSystem() {
               </div>
 
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-400">
-                <span>Probar reclamo rápido por WhatsApp en {tenantActual.nombre}:</span>
+                <span>
+                  Probar reclamo rápido por WhatsApp en {tenantActual.nombre}:
+                </span>
                 {(ticketsPorTenant[tenantActual.id] ?? []).map((tk) => (
                   <button
                     key={tk.ticketId}
@@ -1738,11 +2405,13 @@ export default function TaquillaPosSystem() {
                         </div>
                         <div className="text-lg font-black">
                           {ticketVerificadoCobro.estado === "GANADOR" &&
-                            `GANADOR - PAGAR $${ticketVerificadoCobro.premioTotalUsd.toFixed(
-                              2
-                            )} USD o Bs. ${(
+                            `GANADOR - PAGAR Bs. ${(
                               ticketVerificadoCobro.premioTotalUsd * tasaBcv
-                            ).toFixed(2)}`}
+                            ).toFixed(
+                              2
+                            )} ($${ticketVerificadoCobro.premioTotalUsd.toFixed(
+                              2
+                            )} USD)`}
                           {ticketVerificadoCobro.estado === "PAGADO" &&
                             "YA COBRADO (PAGO IDEMPOTENTE BLOQUEADO)"}
                           {ticketVerificadoCobro.estado === "EMITIDO" &&
@@ -1779,8 +2448,10 @@ export default function TaquillaPosSystem() {
                           {item.nombreAnimal}
                         </span>
                         <span>
-                          Jugado: ${item.montoUsd.toFixed(2)} → Premio 30x: $
-                          {item.premioPotencialUsd.toFixed(2)} USD
+                          Jugado: Bs. {(item.montoUsd * tasaBcv).toFixed(2)} ($
+                          {item.montoUsd.toFixed(2)}) → Premio 30x: Bs.{" "}
+                          {(item.premioPotencialUsd * tasaBcv).toFixed(2)} ($
+                          {item.premioPotencialUsd.toFixed(2)} USD)
                         </span>
                       </div>
                     ))}
@@ -1795,7 +2466,7 @@ export default function TaquillaPosSystem() {
         )}
 
         {/* =====================================================================
-            VISTA 3: DASHBOARD DE ADMINISTRACIÓN DEL COMERCIO
+            VISTA 3: DASHBOARD DE ADMINISTRACIÓN DEL COMERCIO (CAJA & CUPOS)
            ===================================================================== */}
         {vistaActiva === "ADMIN_COMERCIO" && (
           <div className="space-y-6">
@@ -1804,11 +2475,11 @@ export default function TaquillaPosSystem() {
                 <div className="text-xs text-slate-400">
                   Total Vendido Hoy ({tenantActual.nombre})
                 </div>
-                <div className="text-2xl font-black font-mono text-white mt-1">
-                  ${cuadreCajaTenantActual.totalVendidoUsd.toFixed(2)} USD
-                </div>
-                <div className="text-xs font-mono text-sky-400 mt-0.5">
+                <div className="text-2xl font-black font-mono text-sky-300 mt-1">
                   Bs. {cuadreCajaTenantActual.totalVendidoBs.toFixed(2)}
+                </div>
+                <div className="text-xs font-mono text-emerald-400 mt-0.5">
+                  ${cuadreCajaTenantActual.totalVendidoUsd.toFixed(2)} USD
                 </div>
               </div>
 
@@ -1817,14 +2488,14 @@ export default function TaquillaPosSystem() {
                   Total Premios Generados (30x)
                 </div>
                 <div className="text-2xl font-black font-mono text-amber-400 mt-1">
-                  ${cuadreCajaTenantActual.totalPremiosGeneradosUsd.toFixed(2)}{" "}
-                  USD
-                </div>
-                <div className="text-xs font-mono text-slate-400 mt-0.5">
                   Bs.{" "}
                   {(
                     cuadreCajaTenantActual.totalPremiosGeneradosUsd * tasaBcv
                   ).toFixed(2)}
+                </div>
+                <div className="text-xs font-mono text-slate-400 mt-0.5">
+                  ${cuadreCajaTenantActual.totalPremiosGeneradosUsd.toFixed(2)}{" "}
+                  USD
                 </div>
               </div>
 
@@ -1833,15 +2504,13 @@ export default function TaquillaPosSystem() {
                   Total Premios Pagados en Caja
                 </div>
                 <div className="text-2xl font-black font-mono text-rose-400 mt-1">
-                  ${cuadreCajaTenantActual.totalPremiosPagadosUsd.toFixed(2)}{" "}
-                  USD
+                  Bs.{" "}
+                  {(
+                    cuadreCajaTenantActual.totalPremiosPagadosUsd * tasaBcv
+                  ).toFixed(2)}
                 </div>
                 <div className="text-xs font-mono text-slate-400 mt-0.5">
-                  Pendiente por cobrar: $
-                  {(
-                    cuadreCajaTenantActual.totalPremiosGeneradosUsd -
-                    cuadreCajaTenantActual.totalPremiosPagadosUsd
-                  ).toFixed(2)}
+                  ${cuadreCajaTenantActual.totalPremiosPagadosUsd.toFixed(2)} USD
                 </div>
               </div>
 
@@ -1856,155 +2525,80 @@ export default function TaquillaPosSystem() {
                       : "text-rose-400"
                   }`}
                 >
-                  ${cuadreCajaTenantActual.utilidadNetaUsd.toFixed(2)} USD
+                  Bs. {cuadreCajaTenantActual.utilidadNetaBs.toFixed(2)}
                 </div>
                 <div className="text-xs font-mono text-sky-300 mt-0.5">
-                  Bs. {cuadreCajaTenantActual.utilidadNetaBs.toFixed(2)}
+                  ${cuadreCajaTenantActual.utilidadNetaUsd.toFixed(2)} USD
                 </div>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
-                <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                  <span>
-                    Configuración de Cupo de Riesgo por Sorteo (Fórmula: Pérdida Máx / 30)
-                  </span>
-                </h3>
-                <p className="text-xs text-slate-400">
-                  Defina la pérdida máxima aceptable por sorteo para{" "}
-                  <strong>{tenantActual.nombre}</strong>.
-                </p>
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                <span>
+                  Configuración de Cupo de Riesgo del Comercio (Fórmula: Pérdida Máx / 30)
+                </span>
+              </h3>
+              <p className="text-xs text-slate-400">
+                Defina la pérdida máxima aceptable por sorteo para{" "}
+                <strong>{tenantActual.nombre}</strong>.
+              </p>
 
-                <div className="flex items-end gap-3">
-                  <div className="flex-1">
-                    <label className="block text-xs text-slate-400 mb-1">
-                      Pérdida Máxima Aceptable por Sorteo (USD)
-                    </label>
-                    <input
-                      type="number"
-                      value={nuevaPerdidaMaxInput}
-                      onChange={(e) => setNuevaPerdidaMaxInput(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 font-mono text-sm text-white"
-                    />
-                  </div>
-                  <div className="bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-xs font-mono">
-                    <div className="text-slate-400">Cupo Máx por Figura:</div>
-                    <div className="text-emerald-400 font-bold text-sm">
-                      $
-                      {((parseFloat(nuevaPerdidaMaxInput) || 0) / 30).toFixed(
-                        2
-                      )}{" "}
-                      USD
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => {
-                      const val = parseFloat(nuevaPerdidaMaxInput);
-                      if (isNaN(val) || val <= 0) return;
-                      setTenants((prev) =>
-                        prev.map((t) =>
-                          t.id === tenantActual.id
-                            ? {
-                                ...t,
-                                perdidaMaximaUsd: val,
-                                cupoAnimalUsd: Number((val / 30).toFixed(2)),
-                              }
-                            : t
-                        )
-                      );
-                      setAlertaSistema({
-                        tipo: "exito",
-                        mensaje: `Cupo máximo actualizado a $${(
-                          val / 30
-                        ).toFixed(2)} USD por animalito para ${
-                          tenantActual.nombre
-                        }.`,
-                      });
-                    }}
-                    className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg"
-                  >
-                    Guardar Cupo
-                  </button>
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="flex-1 min-w-[200px]">
+                  <label className="block text-xs text-slate-400 mb-1">
+                    Pérdida Máxima Aceptable por Sorteo (USD)
+                  </label>
+                  <input
+                    type="number"
+                    value={nuevaPerdidaMaxInput}
+                    onChange={(e) => setNuevaPerdidaMaxInput(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 font-mono text-sm text-white"
+                  />
                 </div>
-              </div>
-
-              <div className="bg-slate-900 border border-amber-500/40 rounded-xl p-5 space-y-4">
-                <h3 className="text-sm font-bold text-amber-300 flex items-center gap-2">
-                  <Award className="w-4 h-4 text-amber-400" />
-                  <span>
-                    Fail-Safe Manual de Resultados (Contingencia en 2 Pasos)
-                  </span>
-                </h3>
-                <p className="text-xs text-slate-400">
-                  Si el API externo de Lotto Activo presenta demoras, ingrese el animal ganador
-                  con confirmación de dos pasos para disparar{" "}
-                  <code className="text-amber-300">liquidar_sorteo()</code>.
-                </p>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs text-slate-400 mb-1">
-                      Sorteo a Liquidar
-                    </label>
-                    <select
-                      value={sorteoLiquidarId}
-                      onChange={(e) => {
-                        setSorteoLiquidarId(Number(e.target.value));
-                        setPasoConfirmacionManual(1);
-                      }}
-                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-white"
-                    >
-                      {HORARIOS_OFICIALES_LOTTO_ACTIVO.map((h) => (
-                        <option key={h.id} value={h.id}>
-                          {h.etiqueta}{" "}
-                          {resultadosSorteo[h.id] ? "(YA LIQUIDADO)" : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs text-slate-400 mb-1">
-                      Animal Ganador (0, 00, 01..36)
-                    </label>
-                    <input
-                      type="text"
-                      maxLength={2}
-                      value={animalGanadorManual}
-                      onChange={(e) => {
-                        setAnimalGanadorManual(e.target.value);
-                        setPasoConfirmacionManual(1);
-                      }}
-                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-white"
-                    />
+                <div className="bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-xs font-mono">
+                  <div className="text-slate-400">Cupo Máx por Figura:</div>
+                  <div className="text-emerald-400 font-bold text-sm">
+                    $
+                    {((parseFloat(nuevaPerdidaMaxInput) || 0) / 30).toFixed(2)}{" "}
+                    USD (Bs.{" "}
+                    {(
+                      ((parseFloat(nuevaPerdidaMaxInput) || 0) / 30) *
+                      tasaBcv
+                    ).toFixed(2)}
+                    )
                   </div>
                 </div>
-
-                {pasoConfirmacionManual === 1 ? (
-                  <button
-                    onClick={() => setPasoConfirmacionManual(2)}
-                    className="w-full py-2.5 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs uppercase rounded-lg"
-                  >
-                    Paso 1: Pre-validar Liquidación de Sorteo
-                  </button>
-                ) : (
-                  <div className="flex gap-2">
-                    <button
-                      onClick={ejecutarLiquidacionManualContingencia}
-                      className="flex-1 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase rounded-lg"
-                    >
-                      Paso 2: Confirmar y Liquidar 30x Ahora
-                    </button>
-                    <button
-                      onClick={() => setPasoConfirmacionManual(1)}
-                      className="px-4 py-2.5 bg-slate-800 text-slate-300 text-xs rounded-lg"
-                    >
-                      Cancelar
-                    </button>
-                  </div>
-                )}
+                <button
+                  onClick={() => {
+                    const val = parseFloat(nuevaPerdidaMaxInput);
+                    if (isNaN(val) || val <= 0) return;
+                    setTenants((prev) =>
+                      prev.map((t) =>
+                        t.id === tenantActual.id
+                          ? {
+                              ...t,
+                              perdidaMaximaUsd: val,
+                              cupoAnimalUsd: Number((val / 30).toFixed(2)),
+                            }
+                          : t
+                      )
+                    );
+                    setAlertaSistema({
+                      tipo: "exito",
+                      mensaje: `Cupo máximo actualizado a $${(
+                        val / 30
+                      ).toFixed(2)} USD (Bs. ${(
+                        (val / 30) *
+                        tasaBcv
+                      ).toFixed(2)}) por animalito para ${tenantActual.nombre}.`,
+                    });
+                  }}
+                  className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg"
+                >
+                  Guardar Cupo
+                </button>
               </div>
             </div>
 
@@ -2047,139 +2641,6 @@ export default function TaquillaPosSystem() {
                     </div>
                   );
                 })}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* =====================================================================
-            VISTA 4: SUPERADMIN MULTI-TENANT GLOBAL
-           ===================================================================== */}
-        {vistaActiva === "SUPERADMIN" && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
-              <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <PlusCircle className="w-4 h-4 text-emerald-400" />
-                <span>Aprovisionar Nuevo Comercio / Bodega (Tenant RLS)</span>
-              </h3>
-
-              <div className="space-y-3 text-xs">
-                <div>
-                  <label className="block text-slate-400 mb-1">
-                    Nombre del Comercio / Agencia
-                  </label>
-                  <input
-                    type="text"
-                    value={nuevoComercioNombre}
-                    onChange={(e) => setNuevoComercioNombre(e.target.value)}
-                    placeholder="Ej: Inversiones El Gran Premio C.A."
-                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-slate-400 mb-1">RIF</label>
-                  <input
-                    type="text"
-                    value={nuevoComercioRif}
-                    onChange={(e) => setNuevoComercioRif(e.target.value)}
-                    placeholder="J-41239876-0"
-                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-slate-400 mb-1">
-                    Correo del Administrador del Comercio
-                  </label>
-                  <input
-                    type="email"
-                    value={nuevoComercioEmail}
-                    onChange={(e) => setNuevoComercioEmail(e.target.value)}
-                    placeholder="admin@comercio.local"
-                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-slate-400 mb-1">
-                    Pérdida Máxima por Sorteo (USD) → Cupo = Pérdida / 30
-                  </label>
-                  <input
-                    type="number"
-                    value={nuevoComercioPerdidaMax}
-                    onChange={(e) => setNuevoComercioPerdidaMax(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
-                  />
-                </div>
-
-                <button
-                  onClick={() => {
-                    if (!nuevoComercioNombre || !nuevoComercioRif) return;
-                    const perdida = parseFloat(nuevoComercioPerdidaMax) || 300;
-                    const nuevo: TenantComercio = {
-                      id: crypto.randomUUID(),
-                      nombre: nuevoComercioNombre,
-                      rif: nuevoComercioRif,
-                      telefono: "+58 414-0000000",
-                      adminEmail:
-                        nuevoComercioEmail || "admin@nuevo-comercio.local",
-                      perdidaMaximaUsd: perdida,
-                      cupoAnimalUsd: Number((perdida / 30).toFixed(2)),
-                      ventasHoyUsd: 0,
-                      activo: true,
-                    };
-                    setTenants((prev) => [...prev, nuevo]);
-                    setNuevoComercioNombre("");
-                    setNuevoComercioRif("");
-                    setNuevoComercioEmail("");
-                    setAlertaSistema({
-                      tipo: "exito",
-                      mensaje: `Tenant "${
-                        nuevo.nombre
-                      }" creado con aislamiento RLS activo (tenant_id: ${nuevo.id.slice(
-                        0,
-                        8
-                      )}...).`,
-                    });
-                  }}
-                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold uppercase rounded-lg transition"
-                >
-                  Crear Tenant y Asignar Políticas RLS
-                </button>
-              </div>
-            </div>
-
-            <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-xl p-5">
-              <h3 className="text-sm font-bold text-white mb-3">
-                Comercios Activos en la Plataforma (Fondos y Cajas 100% Aislados)
-              </h3>
-              <div className="space-y-3">
-                {tenants.map((t) => (
-                  <div
-                    key={t.id}
-                    className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3"
-                  >
-                    <div>
-                      <div className="font-bold text-sm text-white flex items-center gap-2">
-                        <span>{t.nombre}</span>
-                        <span className="text-[10px] font-mono bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded">
-                          {t.rif}
-                        </span>
-                      </div>
-                      <div className="text-xs text-slate-400 font-mono mt-1">
-                        Admin: {t.adminEmail} • Tenant UUID:{" "}
-                        {t.id.slice(0, 12)}...
-                      </div>
-                    </div>
-
-                    <div className="text-right font-mono text-xs">
-                      <div className="text-emerald-400 font-bold">
-                        Cupo Animal: ${t.cupoAnimalUsd.toFixed(2)} USD
-                      </div>
-                      <div className="text-slate-400">
-                        Pérdida Máx: ${t.perdidaMaximaUsd.toFixed(2)} USD
-                      </div>
-                    </div>
-                  </div>
-                ))}
               </div>
             </div>
           </div>

@@ -33,6 +33,7 @@ export async function GET(request: NextRequest) {
     try {
       const response = await fetch("https://ve.dolarapi.com/v1/dolares/oficial", {
         headers: { Accept: "application/json" },
+        cache: "no-store",
         signal: AbortSignal.timeout(6000),
       });
 
