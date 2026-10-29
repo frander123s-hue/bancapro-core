@@ -102,6 +102,7 @@ interface TicketHistoricoLocal {
     codigoAnimal: string;
     nombreAnimal: string;
     montoUsd: number;
+    montoBs?: number;
     premioPotencialUsd: number;
   }>;
 }
@@ -871,7 +872,9 @@ export default function TaquillaPosSystem() {
         return;
       }
       montoBsFinal = Number(valBs.toFixed(2));
-      montoUsdFinal = Number(Math.max(0.01, valBs / tasaBcv).toFixed(2));
+      // Preservar 4 decimales en la conversión interna a USD para que al multiplicar de vuelta por la tasa BCV
+      // jamás se altere el monto en Bolívares jugado por el cliente (ej. Bs. 20.00 siempre es Bs. 20.00)
+      montoUsdFinal = Number(Math.max(0.0001, valBs / tasaBcv).toFixed(4));
     } else {
       if (isNaN(valUsd) || valUsd <= 0) {
         setAlertaSistema({
@@ -1036,7 +1039,7 @@ export default function TaquillaPosSystem() {
           nombreAnimal: c.figura.nombre,
           montoUsd: c.montoUsd,
           montoBs: c.montoBs,
-          premioPotencialUsd: Number((c.montoUsd * 30).toFixed(2)),
+          premioPotencialUsd: Number(((c.montoBs * 30) / tasaBcv).toFixed(2)),
         })),
       };
 
@@ -1075,7 +1078,8 @@ export default function TaquillaPosSystem() {
           codigoAnimal: c.figura.codigo,
           nombreAnimal: c.figura.nombre,
           montoUsd: c.montoUsd,
-          premioPotencialUsd: Number((c.montoUsd * 30).toFixed(2)),
+          montoBs: c.montoBs,
+          premioPotencialUsd: Number(((c.montoBs * 30) / tasaBcv).toFixed(2)),
         })),
       };
 
@@ -1290,10 +1294,11 @@ export default function TaquillaPosSystem() {
 
     for (const tk of listaTickets) {
       for (const it of tk.items) {
-        const apuestaBs = Number((it.montoUsd * tk.tasaBcv).toFixed(2));
-        const premioPotBs = Number(
-          (it.premioPotencialUsd * tk.tasaBcv).toFixed(2)
-        );
+        const apuestaBs =
+          typeof it.montoBs === "number" && it.montoBs > 0
+            ? Number(it.montoBs.toFixed(2))
+            : Number((it.montoUsd * tk.tasaBcv).toFixed(2));
+        const premioPotBs = Number((apuestaBs * 30).toFixed(2));
         filasCsv.push(
           [
             tk.fechaHora,
@@ -1359,7 +1364,9 @@ export default function TaquillaPosSystem() {
           .map(
             (i) =>
               `${i.sorteoHora}: #${i.codigoAnimal} ${i.nombreAnimal} (Bs. ${(
-                i.montoUsd * tk.tasaBcv
+                typeof i.montoBs === "number" && i.montoBs > 0
+                  ? i.montoBs
+                  : i.montoUsd * tk.tasaBcv
               ).toFixed(2)} / $${i.montoUsd.toFixed(2)})`
           )
           .join("<br/>");
@@ -2802,9 +2809,12 @@ export default function TaquillaPosSystem() {
                                         • #{it.codigoAnimal} {it.nombreAnimal} ➡️{" "}
                                         <strong className="text-emerald-300">
                                           Bs.{" "}
-                                          {(it.montoUsd * tk.tasaBcv).toFixed(
-                                            2
-                                          )}
+                                          {(
+                                            typeof it.montoBs === "number" &&
+                                            it.montoBs > 0
+                                              ? it.montoBs
+                                              : it.montoUsd * tk.tasaBcv
+                                          ).toFixed(2)}
                                         </strong>{" "}
                                         (${it.montoUsd.toFixed(2)})
                                       </div>

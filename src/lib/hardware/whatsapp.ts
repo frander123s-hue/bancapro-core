@@ -56,8 +56,8 @@ export function normalizarTelefonoVenezuela(input: string): string {
  * Construye el mensaje de Comprobante Digital de Lotería para WhatsApp con:
  * - Identificación del Comercio (Tenant) y RIF
  * - Serial del Ticket y Fecha/Hora exacta del servidor
- * - Desglose de animalitos jugados, horario de sorteo y premio potencial (30x)
- * - Total pagado en USD y Bolívares con la tasa oficial BCV congelada
+ * - Desglose exacto en Bolívares (Bs.) y USD sin pérdida por redondeo de decimales
+ * - Total pagado en Bolívares y USD con la tasa oficial BCV congelada
  * - PIN de Cobro y Firma Criptográfica HMAC-SHA256 Anti-Falsificación para reclamar el premio
  */
 export function construirMensajeWhatsAppTicket(
@@ -69,15 +69,29 @@ export function construirMensajeWhatsAppTicket(
 
   const lineasJugadas = ticket.items
     .map((it) => {
-      const montoBs = Number((it.montoUsd * ticket.tasaBcv).toFixed(2));
-      const premioBs = Number((it.premioPotencialUsd * ticket.tasaBcv).toFixed(2));
+      // Usar siempre el monto exacto en Bolívares jugado por el cliente (ej. Bs. 20.00 -> Premio 30x: Bs. 600.00)
+      // evitando que el redondeo a 2 decimales en USD altere los Bolívares apostados.
+      const montoBsExacto =
+        typeof it.montoBs === "number" && it.montoBs > 0
+          ? Number(it.montoBs.toFixed(2))
+          : Number((it.montoUsd * ticket.tasaBcv).toFixed(2));
+      const premioBsExacto = Number((montoBsExacto * 30).toFixed(2));
+      const montoUsdExacto =
+        ticket.tasaBcv > 0
+          ? Number((montoBsExacto / ticket.tasaBcv).toFixed(2))
+          : Number(it.montoUsd.toFixed(2));
+      const premioUsdExacto =
+        ticket.tasaBcv > 0
+          ? Number((premioBsExacto / ticket.tasaBcv).toFixed(2))
+          : Number(it.premioPotencialUsd.toFixed(2));
+
       return `• *${it.sorteoHora}* | *#${it.codigoAnimal} ${
         it.nombreAnimal
-      }* ➡️ *Bs. ${montoBs.toFixed(2)} ($${it.montoUsd.toFixed(
+      }* -> *Bs. ${montoBsExacto.toFixed(2)} ($${montoUsdExacto.toFixed(
         2
-      )})* _(Premio 30x: $${it.premioPotencialUsd.toFixed(
+      )})* _(Premio 30x: $${premioUsdExacto.toFixed(
         2
-      )} / Bs. ${premioBs.toFixed(2)})_`;
+      )} / Bs. ${premioBsExacto.toFixed(2)})_`;
     })
     .join("\n");
 
@@ -92,7 +106,7 @@ export function construirMensajeWhatsAppTicket(
     : "";
 
   return [
-    `🎟️ *COMPROBANTE OFICIAL - ${ticket.comercioNombre.toUpperCase()}*`,
+    `🎫 *COMPROBANTE OFICIAL - ${ticket.comercioNombre.toUpperCase()}*`,
     `🏢 RIF: ${ticket.comercioRif} | *LOTTO ACTIVO*`,
     `━━━━━━━━━━━━━━━━━━━━`,
     `📌 *TICKET N°:* #${ticket.serialCorto}`,
@@ -104,17 +118,17 @@ export function construirMensajeWhatsAppTicket(
     `🦁 *DETALLE DE JUGADAS:*`,
     lineasJugadas,
     `━━━━━━━━━━━━━━━━━━━━`,
-    `💵 *TOTAL USD:* *$${ticket.totalUsd.toFixed(2)}*`,
     `🇻🇪 *TOTAL BS:* *Bs. ${ticket.totalBs.toFixed(2)}*`,
+    `💵 *TOTAL USD:* *$${ticket.totalUsd.toFixed(2)}*`,
     `━━━━━━━━━━━━━━━━━━━━`,
     `🔐 *CÓDIGO PARA RECLAMAR PREMIO:*`,
     `👉 *${pinReclamo}*`,
-    `🛡️ *FIRMA HMAC-SHA256:*`,
+    `🔒 *FIRMA HMAC-SHA256:*`,
     `\`${ticket.codigoSeguridadHmac}\``,
     linkReclamoDirecto
       ? `\n🔎 *Verificar Ticket / QR Digital:*\n${linkReclamoDirecto}`
       : "",
-    `\n⚠️ _Presente este mensaje o su código de seguridad en taquilla para cobrar su premio. Válido por 3 días._`,
+    `\n✅ _Presente este mensaje o su código de seguridad en taquilla para cobrar su premio. Válido por 3 días._`,
   ]
     .filter(Boolean)
     .join("\n");
